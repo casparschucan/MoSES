@@ -8,8 +8,8 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/casparschucan/moodle-skin/main/moodle-stack-helper.user.js
-// @downloadURL  https://raw.githubusercontent.com/casparschucan/moodle-skin/main/moodle-stack-helper.user.js
+// @updateURL    https://raw.githubusercontent.com/casparschucan/MoSES/main/moodle-stack-helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/casparschucan/MoSES/main/moodle-stack-helper.user.js
 // ==/UserScript==
 
 /*
