@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: Save/Preview shortcuts (ETHZ)
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.1.0
+// @version      0.1.1
 // @description  Ctrl+S clicks "Save changes and continue editing" and Ctrl+P clicks "Preview" on ETHZ Moodle STACK question edit pages, instead of triggering the browser's own Save Page / Print dialogs.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
@@ -42,13 +42,16 @@
   const PREVIEW_TEXT_PATTERN = 'preview';
 
   function getButtonLabel(el) {
-    // <button> elements carry their label as text content; <input type=submit>
-    // carries it in the value attribute instead.
+    // <button>/<a> elements carry their label as text content; <input
+    // type=submit> carries it in the value attribute instead.
     return (el.tagName === 'INPUT' ? el.value : el.textContent).trim().toLowerCase();
   }
 
   function findButtonByText(pattern) {
-    const candidates = document.querySelectorAll('button, input[type="submit"]');
+    // Preview is rendered as a plain <a> link (opening preview.php), not a
+    // form button, so it has to be included here alongside the actual
+    // submit buttons.
+    const candidates = document.querySelectorAll('button, input[type="submit"], a');
     for (const el of candidates) {
       if (getButtonLabel(el).includes(pattern)) {
         return el;
