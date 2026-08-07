@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Moodle STACK Helper (ETHZ)
-// @namespace    https://github.com/caspar/moodle-stack-helper
-// @version      0.1.0
+// @name         MoSES: Moodle STACK Editor Skin (ETHZ)
+// @namespace    https://github.com/casparschucan/MoSES
+// @version      0.1.1
 // @description  Makes the "Question variables" textarea on ETHZ Moodle STACK question edit pages resizable, lets you Ctrl+scroll to change the font size across all the question's text fields, and remembers your preferred size/font.
-// @author       you
+// @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
 // @grant        GM_setValue
 // @grant        GM_getValue
