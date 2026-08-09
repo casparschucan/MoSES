@@ -72,14 +72,24 @@ A separate script for the same STACK question edit page:
 - **Ctrl+S** clicks "Save changes and continue editing" (not the plain "Save
   changes" button, which navigates away from the form).
 - **Ctrl+P** clicks "Preview".
+- **Ctrl+Enter** does both, in order — saves, then opens the refreshed
+  Preview — for the "tweak the question, check the preview" loop.
 
-Both combos normally trigger the browser's own Save Page / Print dialogs;
-this script intercepts them with `preventDefault()` so only the in-page
-button click happens, scoped to this one page via `@match`. It finds the
-buttons by matching their visible label text rather than a hardcoded
-id/name, since the exact attributes ETHZ's theme/STACK plugin render weren't
-known up front. If a shortcut does nothing, check the browser console for a
-`[Keyboard Shortcuts]` warning naming which button couldn't be found.
+All three combos normally trigger the browser's own Save Page / Print /
+form-submit behavior; this script intercepts them with `preventDefault()` so
+only the in-page button click happens, scoped to this one page via `@match`.
+It finds the buttons by matching their visible label text rather than a
+hardcoded id/name, since the exact attributes ETHZ's theme/STACK plugin
+render weren't known up front. If a shortcut does nothing, check the browser
+console for a `[Keyboard Shortcuts]` warning naming which button couldn't be
+found.
+
+Ctrl+Enter needs one extra trick: "Save changes and continue editing"
+reloads the page, which wipes out the script's in-memory state before it can
+click Preview. So it leaves a small breadcrumb in `sessionStorage` before
+clicking save, and every page load checks for that breadcrumb — if present,
+it's cleared and Preview is clicked automatically. This only affects the
+current browser tab and clears itself immediately, so it doesn't linger.
 
 ## Updating the script after you push a change
 
