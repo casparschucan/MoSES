@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: Moodle STACK Editor Skin (ETHZ)
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.1.2
+// @version      0.1.3
 // @description  Makes the "Question variables" textarea on ETHZ Moodle STACK question edit pages resizable, lets you Ctrl+scroll to change the font size across all the question's text fields, and remembers your preferred size/font.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
@@ -144,15 +144,36 @@
    * The one thing to watch for: Moodle's rich-text (Atto/TinyMCE) editor
    * normally *hides* the real <textarea> behind an iframe-based WYSIWYG UI,
    * so blindly grabbing every textarea could silently size an invisible
-   * element. You've said you always use the Plain Text editor on this site,
-   * so that shouldn't come up — but we filter to visible textareas
-   * (`offsetParent !== null`) anyway as a cheap safety net, in case some
-   * field still ends up using the rich editor.
+   * element. We filter to visible textareas (`offsetParent !== null`) as a
+   * cheap safety net for that case — this is a known, accepted limitation
+   * on pages where the rich editor is in use (see moodle-app6, where the
+   * Plain Text editor isn't available for every field).
    */
-  function findAllTextTextareas() {
-    return Array.from(document.querySelectorAll('textarea')).filter(
-      (el) => el.offsetParent !== null
-    );
+  /**
+   * On the exam-Moodle site (moodle-app6), PRTs' "Feedback variables"
+   * textareas exist in the DOM from the start but sit inside a collapsed
+   * "Potential response tree N" section (Moodle's collapsible fieldsets),
+   * so `offsetParent === null` until the user expands that section — a
+   * one-time scan at document-idle permanently misses them. Rather than
+   * filtering once, we keep a live registry: `registerTextarea()` can be
+   * called repeatedly (including for textareas already seen) and only acts
+   * the first time a given textarea becomes visible.
+   */
+  const registeredTextareas = new WeakSet();
+  let applyFontSizeToTextarea = null; // assigned once setupFontSizeControl runs
+
+  function registerTextarea(el) {
+    if (el.offsetParent === null || registeredTextareas.has(el)) {
+      return;
+    }
+    registeredTextareas.add(el);
+    if (applyFontSizeToTextarea) {
+      applyFontSizeToTextarea(el);
+    }
+  }
+
+  function scanForTextareas() {
+    document.querySelectorAll('textarea').forEach(registerTextarea);
   }
 
   /**
@@ -164,20 +185,20 @@
    * All fields share a single remembered font size: scrolling on any one of
    * them resizes all of them together and saves one value, so the whole form
    * stays visually consistent rather than each box drifting to a different
-   * size.
+   * size. Because fields can appear later (see registerTextarea above),
+   * "all of them" is whatever's been registered so far, tracked here rather
+   * than passed in as a fixed array.
    */
-  function setupFontSizeControl(textareas) {
+  function setupFontSizeControl() {
     // Restore a previously saved font size, or fall back to a larger-than-
     // stock default (Moodle's own textareas are usually ~13px).
     const savedFontPx = GM_getValue(FONT_STORAGE_KEY, null);
-    const initialPx = savedFontPx || DEFAULT_FONT_PX;
-    textareas.forEach((t) => {
-      t.style.fontSize = initialPx + 'px';
-    });
+    let currentPx = savedFontPx || DEFAULT_FONT_PX;
 
     let saveTimer = null;
     function applyFontSize(px) {
-      textareas.forEach((t) => {
+      currentPx = px;
+      knownTextareas.forEach((t) => {
         t.style.fontSize = px + 'px';
       });
       // Debounce the save the same way as height, so rapid scrolling doesn't
@@ -188,7 +209,11 @@
       }, 300);
     }
 
-    textareas.forEach((textarea) => {
+    const knownTextareas = [];
+    applyFontSizeToTextarea = (textarea) => {
+      knownTextareas.push(textarea);
+      textarea.style.fontSize = currentPx + 'px';
+
       textarea.addEventListener('wheel', (event) => {
         // Only hijack scrolling when Ctrl (or Cmd on Mac, which browsers
         // also report as ctrlKey for wheel events) is held. Plain scrolling
@@ -202,7 +227,6 @@
         // stops that so only the textareas' font size changes.
         event.preventDefault();
 
-        const currentPx = parseFloat(getComputedStyle(textarea).fontSize);
         // deltaY is negative when scrolling up ("away" from you) — treat
         // that as zoom in, matching how page-zoom and code editors behave.
         const direction = event.deltaY < 0 ? 1 : -1;
@@ -210,7 +234,7 @@
 
         applyFontSize(nextPx);
       }, { passive: false }); // passive:false is required for preventDefault() to work on a wheel event
-    });
+    };
   }
 
   const questionVariablesTextarea = findQuestionVariablesTextarea();
@@ -229,13 +253,23 @@
     );
   }
 
-  const allTextareas = findAllTextTextareas();
+  setupFontSizeControl();
+  scanForTextareas();
 
-  if (allTextareas.length > 0) {
-    setupFontSizeControl(allTextareas);
-  } else {
-    console.warn(
-      '[Moodle STACK Helper] No visible textareas found on this page for font-size control.'
-    );
-  }
+  // Collapsed PRT sections (and any textarea added later, e.g. via an "Add
+  // another PRT" button) render their textarea into the DOM before it's
+  // visible, or not at all until expanded/added. A one-time scan can't see
+  // those, so keep watching the DOM for the rest of the page's life and
+  // re-scan (debounced) whenever something changes.
+  let rescanTimer = null;
+  const domObserver = new MutationObserver(() => {
+    clearTimeout(rescanTimer);
+    rescanTimer = setTimeout(scanForTextareas, 150);
+  });
+  domObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'style', 'hidden'],
+  });
 })();
