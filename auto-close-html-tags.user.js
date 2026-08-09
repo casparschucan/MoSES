@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         MoSES: Auto-close HTML tags
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.1.0
+// @version      0.1.1
 // @description  Typing the closing > of an opening HTML tag (e.g. <div>) in Question text / feedback fields auto-inserts the matching closing tag and places the caret between them.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
+// @match        https://moodle-app6.let.ethz.ch/question/bank/editquestion/question.php*
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/casparschucan/MoSES/main/auto-close-html-tags.user.js
 // @downloadURL  https://raw.githubusercontent.com/casparschucan/MoSES/main/auto-close-html-tags.user.js

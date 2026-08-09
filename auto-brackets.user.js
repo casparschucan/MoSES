@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         MoSES: Auto-brackets
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.1.0
+// @version      0.1.1
 // @description  Auto-inserts the matching ), ], }, ", ' when you type the opening character in any text field on the STACK question edit page; skips over an existing closing character instead of duplicating it; deletes both halves of an empty pair on Backspace.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
+// @match        https://moodle-app6.let.ethz.ch/question/bank/editquestion/question.php*
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/casparschucan/MoSES/main/auto-brackets.user.js
 // @downloadURL  https://raw.githubusercontent.com/casparschucan/MoSES/main/auto-brackets.user.js

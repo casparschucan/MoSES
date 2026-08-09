@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         MoSES: Save/Preview shortcuts (ETHZ)
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.2.1
+// @version      0.2.2
 // @description  Ctrl+S clicks "Save changes and continue editing", Ctrl+P clicks "Preview", and Ctrl+Enter does both in sequence (refresh the preview) on ETHZ Moodle STACK question edit pages, instead of triggering the browser's own Save Page / Print dialogs.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
+// @match        https://moodle-app6.let.ethz.ch/question/bank/editquestion/question.php*
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/casparschucan/MoSES/main/keyboard-shortcuts.user.js
 // @downloadURL  https://raw.githubusercontent.com/casparschucan/MoSES/main/keyboard-shortcuts.user.js
