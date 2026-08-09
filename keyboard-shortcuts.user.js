@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: Save/Preview shortcuts (ETHZ)
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.2.0
+// @version      0.2.1
 // @description  Ctrl+S clicks "Save changes and continue editing", Ctrl+P clicks "Preview", and Ctrl+Enter does both in sequence (refresh the preview) on ETHZ Moodle STACK question edit pages, instead of triggering the browser's own Save Page / Print dialogs.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
@@ -39,7 +39,28 @@
  * happen on the *next* page load, after the reload finishes. We leave a
  * breadcrumb in sessionStorage (survives the reload, scoped to this tab)
  * before clicking save, then check for that breadcrumb on every load and
- * click Preview if it's there.
+ * open Preview if it's there.
+ *
+ * WHY THE POST-SAVE PREVIEW NEEDS window.open() INSTEAD OF A CLICK, AND WHY
+ * IT NEEDS YOUR BROWSER'S PERMISSION
+ * ---------------------------------------------------------------------------
+ * Moodle's Preview link normally opens in a new window/tab because its own
+ * click handler calls window.open(). Browsers only allow window.open() to
+ * actually open a new window when it happens as the direct, immediate result
+ * of the user physically clicking something ("user activation") - by design,
+ * to stop sites from popping up windows on their own. Our post-save preview
+ * step runs after a full page reload, with no user click at that exact
+ * moment, so it doesn't qualify. If we just click Moodle's link like Ctrl+P
+ * does, Moodle's own code detects the blocked popup and quietly falls back
+ * to navigating *this* window to the preview instead - not what you want.
+ * Calling window.open() ourselves on the preview URL sidesteps that
+ * same-window fallback, but it's still subject to the same browser
+ * popup-blocking rule: unless you've told your browser to always allow
+ * popups for this Moodle site, it may block this call outright and open
+ * nothing. (Chrome/Firefox: click the popup-blocked icon in the address bar
+ * once, or add moodle-app2.let.ethz.ch to Settings > Privacy > Pop-ups and
+ * redirects > Allowed.) Once allowed, the site-level permission applies
+ * regardless of whether there was a recent click, so this keeps working.
  *
  * WHY MATCH BUTTONS BY TEXT INSTEAD OF id/name
  * ---------------------------------------------------------------------------
@@ -124,9 +145,25 @@
 
   // Runs on every load of this page, including the reload that "Save changes
   // and continue editing" triggers. If Ctrl+Enter set the breadcrumb before
-  // that reload, clear it and open Preview now that the saved page is ready.
+  // that reload, clear it and open Preview in a new window now that the
+  // saved page is ready - see the window.open() comment near the top of this
+  // file for why this can't just be a click() like the plain Ctrl+P path.
   if (sessionStorage.getItem(AUTO_PREVIEW_FLAG)) {
     sessionStorage.removeItem(AUTO_PREVIEW_FLAG);
-    clickOrWarn(PREVIEW_TEXT_PATTERN, 'Ctrl+Enter (preview step)');
+    const previewLink = findButtonByText(PREVIEW_TEXT_PATTERN);
+    if (previewLink && previewLink.href) {
+      const popup = window.open(previewLink.href, '_blank', 'noopener');
+      if (!popup) {
+        console.warn(
+          '[Keyboard Shortcuts] Ctrl+Enter (preview step): the browser blocked the ' +
+          'preview popup. Allow pop-ups for this site to let this open automatically.'
+        );
+      }
+    } else {
+      console.warn(
+        '[Keyboard Shortcuts] Ctrl+Enter (preview step): no link found with text ' +
+        `containing "${PREVIEW_TEXT_PATTERN}". Inspect the form's buttons and update the pattern in keyboard-shortcuts.user.js.`
+      );
+    }
   }
 })();

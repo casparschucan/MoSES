@@ -86,10 +86,22 @@ found.
 
 Ctrl+Enter needs one extra trick: "Save changes and continue editing"
 reloads the page, which wipes out the script's in-memory state before it can
-click Preview. So it leaves a small breadcrumb in `sessionStorage` before
+open Preview. So it leaves a small breadcrumb in `sessionStorage` before
 clicking save, and every page load checks for that breadcrumb — if present,
-it's cleared and Preview is clicked automatically. This only affects the
+it's cleared and Preview is opened automatically. This only affects the
 current browser tab and clears itself immediately, so it doesn't linger.
+
+**Note on pop-ups:** after the reload, there's no direct user click for the
+browser to attach to, so if you click Moodle's Preview link the normal way
+it detects the blocked pop-up and falls back to navigating your current
+window instead — not what you want. To avoid that, this step calls
+`window.open()` on the preview URL directly, but browsers still require you
+to have allowed pop-ups for this site (a one-time thing) or that call gets
+silently blocked. If Ctrl+Enter saves but no preview window appears, allow
+pop-ups for `moodle-app2.let.ethz.ch` (in Chrome/Firefox: click the
+pop-up-blocked icon in the address bar the first time, or add the site under
+Settings → Privacy → Pop-ups and redirects → Allowed) — after that it keeps
+working every time.
 
 ## Updating the script after you push a change
 
