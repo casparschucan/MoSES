@@ -103,6 +103,46 @@ pop-up-blocked icon in the address bar the first time, or add the site under
 Settings → Privacy → Pop-ups and redirects → Allowed) — after that it keeps
 working every time.
 
+## Auto-brackets (`auto-brackets.user.js`)
+
+A separate script that auto-closes brackets and quotes in **every** text
+field on the form:
+- Typing `(`, `[`, `{`, `"`, or `'` inserts the matching closing character
+  right after the caret, with the caret left in between — the same behavior
+  as VS Code and most code editors.
+- Typing a closing character that's already the next character in the field
+  "types over" it instead of inserting a duplicate.
+- Selecting some text and typing an opening bracket/quote wraps the
+  selection instead of replacing it.
+- Pressing Backspace with the caret inside an empty auto-inserted pair (e.g.
+  between `(` and `)`) deletes both characters in one step.
+- Holding Ctrl/Alt/Meta disables all of the above, so it never interferes
+  with `keyboard-shortcuts.user.js`'s Ctrl+S/P/Enter or any other shortcut.
+
+It edits the field via `document.execCommand('insertText'/'delete')` rather
+than setting `.value` directly, so the browser's native undo (Ctrl+Z) and
+Moodle's own form-dirty tracking both keep working correctly.
+
+## Auto-close HTML tags (`auto-close-html-tags.user.js`)
+
+A separate script that finishes HTML tags for you in **Question text and
+feedback fields only** (deliberately excluding Question variables/Feedback
+variables, since `<`/`>` are comparison operators in Maxima code, not
+markup — see the field heuristic below):
+- Typing the closing `>` of an opening tag like `<div>` auto-inserts
+  `</div>` right after the caret, with the caret left between the two tags.
+- Void elements (`<br>`, `<img>`, ...) and already self-closing tags
+  (`<br/>`) are left alone, since they have no closing tag.
+- **Known limitation**: if you then type your own closing tag afterwards,
+  you'll end up with a duplicate — this isn't detected/merged, to keep the
+  script simple.
+- **Field detection is a heuristic**, since there's no existing way in this
+  codebase to distinguish "HTML content field" from "Maxima code field": any
+  textarea whose `id`/`name` doesn't contain `variables` is treated as an
+  HTML field. If auto-close ever fires inside a Maxima field, check that
+  field's actual `id`/`name` in devtools and report it so the heuristic can
+  be tightened.
+
 ## Updating the script after you push a change
 
 Each script has `@updateURL`/`@downloadURL` metadata pointing at its raw file
