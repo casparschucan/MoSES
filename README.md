@@ -143,6 +143,65 @@ markup — see the field heuristic below):
   field's actual `id`/`name` in devtools and report it so the heuristic can
   be tightened.
 
+## Syntax highlighting (`syntax-highlight.user.js`)
+
+A separate script that syntax-highlights the **Maxima code fields** — Question
+variables and each PRT's Feedback variables (the same "id/name contains
+`variables`" test the auto-close-HTML script uses, inverted). Question text and
+feedback fields are deliberately left alone for now.
+
+What you get:
+- **Rainbow brackets.** `(`, `[` and `{` are coloured by nesting depth, so a
+  matching pair always shares a colour and you can see the structure of a long
+  `block(...)` at a glance.
+- **Unmatched brackets in red, with a wavy underline** — including a `(` that's
+  never closed, a stray `)`, and a `(` closed by `]`. Same treatment for an
+  unterminated string or `/* comment`, which otherwise silently swallow the
+  rest of the field.
+- **Your own variables in a distinct colour.** Anything you assign with `:` or
+  `:=` is picked out *everywhere it appears*, not just where it was assigned,
+  so it's obvious which names are yours and which belong to Maxima.
+- Strings, nested `/* */` comments, numbers, keywords, and STACK/Maxima
+  builtins each get their own colour, and `;` / `$` statement terminators are
+  drawn in bold so a missing one stands out.
+- The code fields are switched to a **monospace font** (this is required for
+  the highlighting to line up — see below).
+
+### How it works, and how it can fail
+
+A `<textarea>` can only render plain text — you can't put a coloured `<span>`
+inside one. So the script lays a "mirror" element on top of the field showing
+the same text with colours, makes it click-through (`pointer-events: none`),
+and makes the real textarea's own text transparent. **Everything you actually
+interact with is still the real textarea**: typing, the caret, selection,
+Ctrl+Z undo, form submission and the other MoSES scripts are all untouched.
+
+Because the mirror is a separate element, it has to line up with the textarea
+to the pixel. Two consequences worth knowing:
+
+- **Monospace is forced on these fields, deliberately.** In the textarea a
+  line is one continuous run of text, so the browser kerns across it; in the
+  mirror the line is chopped into spans, and kerning doesn't apply across a
+  span boundary. With a proportional font the two would drift apart *within* a
+  line. With monospace every glyph has the same width, so it can't. (Ligatures
+  are switched off on both sides for the same reason.)
+- **If it can't line up, it turns itself off.** At attach time the script
+  measures the mirror against the textarea, and if they're more than a pixel
+  apart it removes the overlay, restores the field to plain text and logs a
+  `[MoSES Highlight]` warning with the measured offset. A field with no
+  highlighting is fine; a field whose text ghosts a few pixels off is not.
+  Any error while re-rendering does the same thing, and the real text is only
+  made transparent *after* a first render has succeeded — so there is no
+  failure path that leaves you unable to see what you're typing.
+
+Fields inside a collapsed *Potential response tree* section aren't laid out
+yet, so they're highlighted the moment you click into them rather than at page
+load. Same for any field added later by an "Add another PRT" button.
+
+To turn it off, use the Tampermonkey icon → **Toggle STACK syntax
+highlighting**. It takes effect immediately, without a page reload (so you
+don't lose unsaved edits), and is remembered.
+
 ## Updating the script after you push a change
 
 Each script has `@updateURL`/`@downloadURL` metadata pointing at its raw file
@@ -186,4 +245,11 @@ Not implemented yet, but natural follow-ups if useful:
   text fields, the way Question variables already has it.
 - Per-field (rather than shared) font sizes, if you ever want feedback text
   smaller than your Maxima code, for example.
-- A monospace font / syntax highlighting for the Maxima code in the field.
+- Extending `syntax-highlight.user.js` to Question text and feedback fields:
+  STACK `[[...]]` tags, inline CAS `{@ ... @}` / `{# ... #}`, LaTeX regions and
+  HTML.
+- A lint/diagnostics strip under each field: statements not ending in `;`
+  (which STACK's docs recommend but don't require), unbalanced brackets, an
+  `[[input:ansN]]` with no matching `[[validation:ansN]]`, and so on.
+- Autocomplete inside `[[ ]]` offering the `ansN`/`prtN` names actually used by
+  the question, plus the STACK block names (`if`, `comment`, `foreach`, ...).

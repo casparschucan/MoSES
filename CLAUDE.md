@@ -48,6 +48,9 @@ Current scripts:
 - `auto-close-html-tags.user.js` — auto-inserts the closing tag when you
   finish an opening HTML tag, restricted to Question text/feedback fields
   (see the field-classification heuristic below).
+- `syntax-highlight.user.js` — syntax-highlights the Maxima fields via a
+  mirror overlay (see below). Owns `textarea.style.color` / `caretColor` /
+  `fontFamily` on those fields.
 
 ### Release/update mechanism
 
@@ -66,9 +69,12 @@ up front and can't be inspected directly (no live authenticated access), and
 some fields (e.g. per-PRT feedback textareas) have no single stable
 id/name. Both scripts therefore favor grabbing broadly and filtering/matching
 safely over hardcoding brittle selectors:
-- `moodle-stack-helper.user.js`'s `findAllTextTextareas()` grabs every
-  `<textarea>` on the page and filters to visible ones (`offsetParent !==
-  null`), rather than listing selectors per field.
+- `moodle-stack-helper.user.js`'s `scanForTextareas()`/`registerTextarea()`
+  grab every `<textarea>` on the page and filter to visible ones
+  (`offsetParent !== null`), rather than listing selectors per field. Because
+  PRT sections render collapsed, that filter has to be re-applied over time
+  rather than once — hence the live `WeakSet` registry plus a debounced
+  `MutationObserver` on `document.body`.
 - `keyboard-shortcuts.user.js`'s `findButtonByText()` scans
   `button, input[type="submit"], a` and matches on visible label text
   (case-insensitive substring), since the target controls turned out to be a
@@ -97,6 +103,66 @@ setting `.value` directly — this preserves the browser's native undo/redo
 stack and fires a real `input` event that Moodle's own form-dirty tracking
 depends on; a manual `.value` + dispatched `input` event is the fallback if
 `execCommand` support is ever missing.
+
+### `syntax-highlight.user.js` overlay design
+
+A `<textarea>` renders plain text only, so highlighting means laying a
+"mirror" element over the field with the same text marked up in coloured
+spans, making it `pointer-events: none`, and making the textarea's own text
+`color: transparent`. The textarea is never replaced, re-parented, or written
+to — which is what keeps native undo, Moodle's form-dirty tracking, and the
+other three scripts (all of which require `event.target.tagName ===
+'TEXTAREA'`) working. Replacing the textarea with a contenteditable, or
+`@require`-ing CodeMirror/Monaco, would break all of that; both were
+considered and rejected.
+
+Non-obvious constraints, all of which are load-bearing:
+
+- **The mirror goes in *front*, not behind.** The selection band is painted
+  by the textarea; with the mirror behind, it paints over the syntax colours.
+  In front, it shows through the mirror's transparent background. The one
+  extra rule needed is `textarea.moses-hl::selection { color: transparent }`,
+  because Chrome forces an opaque colour on selected text.
+- **The mirror lives in a shadow root.** Two reasons: Moodle ships Bootstrap,
+  and a single page-level rule on `div`/`span` would shift the mirror by
+  fractions of a pixel per line; and mutation records don't cross a shadow
+  boundary, so rebuilding the mirror's `innerHTML` on every keystroke is
+  invisible to `moodle-stack-helper.user.js`'s body-wide `MutationObserver`.
+- **Monospace and no ligatures, on both sides.** Kerning and ligatures apply
+  across a continuous text run in the textarea, but not across a span boundary
+  in the mirror, so a proportional font drifts *within* a line by an amount
+  that depends on where tokens happen to split.
+- **The host is an absolutely positioned sibling**, with the parent made
+  `position: relative` only if it was `static` (and restored on detach).
+  Wrapping the textarea would re-parent it, which blurs it and can drop its
+  native undo stack.
+- **Size the host from `clientWidth`/`clientHeight`**, not `offsetWidth` —
+  those exclude the scrollbar, which is what makes wrapping identical once the
+  field is tall enough to scroll.
+- **Render into a `<div>`, not a `<pre>`** — the HTML parser strips a newline
+  immediately after a `<pre>` start tag, so a field beginning with a blank
+  line would be permanently off by one line.
+- **Every write to the textarea's own style happens once, at attach, before
+  the style `MutationObserver` is installed.** That observer exists to catch
+  `moodle-stack-helper.user.js` changing `fontSize`/`height` (there's no
+  callback to hook); a later write of our own would make it loop forever.
+- **`color: transparent` is only set after a first successful render and a
+  passing alignment check**, and any later exception detaches and restores
+  plain text. The failure mode to design against is "the user can't see what
+  they're typing", and it must be unreachable.
+
+The tokenizer emits a flat token array rather than an HTML string, because
+rainbow brackets need retroactive classification: whether a `(` is matched
+isn't known until its `)` (or EOF). A second linear pass relabels every
+occurrence of a name that was ever an assignment target, which is what makes
+user variables stand out everywhere rather than only where assigned. Tokens
+whose colour equals the base text colour (plain identifiers, operators) are
+emitted without a span at all — that roughly halves the generated markup.
+
+There is no test tooling in this repo, but the tokenizer and renderer are
+pure functions of a string and can be exercised offline by slicing them out
+of the file and `new Function`-ing them; do that when changing them, rather
+than relying on the user to notice a regression on a live page.
 
 ### `keyboard-shortcuts.user.js` shortcut design
 
