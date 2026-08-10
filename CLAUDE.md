@@ -106,10 +106,10 @@ depends on; a manual `.value` + dispatched `input` event is the fallback if
 
 ### `syntax-highlight.user.js` overlay design
 
-A `<textarea>` renders plain text only, so highlighting means laying a
-"mirror" element over the field with the same text marked up in coloured
-spans, making it `pointer-events: none`, and making the textarea's own text
-`color: transparent`. The textarea is never replaced, re-parented, or written
+A `<textarea>` renders plain text only, so highlighting means putting a
+"mirror" element behind the field with the same text marked up in coloured
+spans, and making the textarea's own text and background `transparent` so the
+mirror shows through. The textarea is never replaced, re-parented, or written
 to — which is what keeps native undo, Moodle's form-dirty tracking, and the
 other three scripts (all of which require `event.target.tagName ===
 'TEXTAREA'`) working. Replacing the textarea with a contenteditable, or
@@ -118,11 +118,25 @@ considered and rejected.
 
 Non-obvious constraints, all of which are load-bearing:
 
-- **The mirror goes in *front*, not behind.** The selection band is painted
-  by the textarea; with the mirror behind, it paints over the syntax colours.
-  In front, it shows through the mirror's transparent background. The one
-  extra rule needed is `textarea.moses-hl::selection { color: transparent }`,
-  because Chrome forces an opaque colour on selected text.
+- **The mirror goes *behind*, not in front — this was a shipped bug in
+  v0.2.0, fixed in v0.2.1.** In front looks better on paper: the selection
+  band shows through the mirror's transparent background, so selected text
+  keeps its colours. But both engines paint selected text in the selection's
+  own foreground colour, which overrides `color: transparent`, and **Firefox
+  ignores `::selection` inside form controls**, so it cannot be suppressed
+  there. The real text therefore reappeared behind the mirror's coloured text
+  on any selection — two overlapping copies of the same glyphs. Behind, the
+  textarea owns selection rendering entirely and it works everywhere with no
+  `::selection` rule at all. The cost is that selected text loses its syntax
+  colours while selected; that is the correct trade. Do not "improve" this
+  back to a front overlay.
+- **Going behind means the textarea's background must be transparent**, or it
+  hides the mirror; the mirror paints the original `backgroundColor` instead.
+  Border, focus ring and invalid-field styling still come from the textarea.
+  It also means both elements must be positioned (`host` z-index 0, textarea
+  `position: relative` + z-index 1) — a positioned element always paints above
+  a static one regardless of DOM order, so z-index is the only way to put our
+  host underneath.
 - **The mirror lives in a shadow root.** Two reasons: Moodle ships Bootstrap,
   and a single page-level rule on `div`/`span` would shift the mirror by
   fractions of a pixel per line; and mutation records don't cross a shadow

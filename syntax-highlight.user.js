@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: Syntax highlighting
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.2.0
+// @version      0.2.1
 // @description  Syntax-highlights every text field on ETHZ Moodle STACK question edit pages: Maxima fields get rainbow-matched brackets, a distinct colour for the variables you define, strings, comments and keywords; Question text and feedback get STACK [[...]] tags, inline CAS {@ ... @}, LaTeX and HTML.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
@@ -44,20 +44,37 @@
  * Nothing about the textarea's value, undo history, form identity or event
  * behaviour changes. If this script breaks, the worst case is cosmetic.
  *
- * IN FRONT, NOT BEHIND
+ * BEHIND, NOT IN FRONT (this was learned the hard way)
  * -------------------------------------------------------------------------
- * Most tutorials put the mirror *behind* a transparent textarea. Putting it
- * in front is better for two concrete reasons:
+ * The mirror sits *behind* the textarea, and the textarea's own text is made
+ * transparent so the mirror shows through it. The tempting alternative -
+ * mirror in front, click-through, textarea underneath - looks better on
+ * paper (the selection band shows through the mirror's transparent
+ * background, so selected text keeps its syntax colours) and it is what this
+ * script did originally. It is wrong, because of selection:
  *
- *   - Selection. The blue selection band is painted by the textarea. With the
- *     mirror behind, that band paints over your syntax colours and you get a
- *     solid slab. With the mirror in front, the band shows through the
- *     mirror's transparent background and the coloured glyphs stay readable.
- *     (One rule is still needed - see MOSES_HL_SELECTION_CSS below - because
- *     Chrome forces an opaque text colour on selected text.)
- *   - Chrome. With the mirror behind you must make the textarea's background
- *     transparent and then re-paint its border, focus ring and invalid-field
- *     styling yourself. In front, the textarea just renders its own chrome.
+ *   Both engines paint SELECTED text using the selection's own foreground
+ *   colour, which overrides `color: transparent`. Chrome lets you suppress
+ *   that with `::selection { color: transparent }`; Firefox ignores
+ *   `::selection` inside form controls, so there is no way to suppress it
+ *   there at all. With the mirror in front you therefore get the real text
+ *   reappearing *behind* the mirror's coloured text the moment you select
+ *   anything - two copies of the same glyphs, slightly different colours,
+ *   i.e. unreadable.
+ *
+ * Putting the mirror behind hands selection rendering entirely back to the
+ * textarea, where it belongs: the browser paints its normal opaque band and
+ * its normal selected-text colour straight over the mirror, and it looks
+ * exactly like selecting text in any other textarea. The cost is that
+ * selected text loses its syntax colours while it stays selected. That is a
+ * fair trade for "selection works identically in every browser", and it
+ * needs no `::selection` rule at all - so nothing here depends on a feature
+ * Firefox doesn't implement for form controls.
+ *
+ * The price of going behind is that the textarea's own background would hide
+ * the mirror, so it is made transparent and the mirror paints the original
+ * background colour instead. The border, focus ring and invalid-field
+ * styling are unaffected - those are still drawn by the textarea, on top.
  *
  * WHY THE MIRROR LIVES IN A SHADOW ROOT
  * -------------------------------------------------------------------------
@@ -135,12 +152,6 @@
   const RAINBOW_DEPTHS = 5;         // bracket colours before the cycle repeats
   const RENDER_BUDGET_MS = 8;       // above this a re-render no longer fits comfortably in a frame
   const SLOW_RENDER_DELAY_MS = 120; // ...so back off to a trailing debounce on such fields
-
-  // The one rule that cannot live inside the shadow root, because it targets
-  // the textarea itself (which is in the normal page DOM). Chrome paints
-  // selected text in an opaque colour unless you say otherwise, which would
-  // make the real - invisible - text reappear on top of the mirror.
-  const MOSES_HL_SELECTION_CSS = 'textarea.moses-hl::selection { color: transparent; }';
 
   /**
    * Every computed style that has to match between the textarea and the
@@ -896,7 +907,11 @@
   function buildTokenCss(palette) {
     const rules = [
       ':host { display: block; }',
-      '.mirror { margin: 0; background: transparent; color: ' + palette.text + '; }',
+      // background-color is set inline per field, copied from the textarea's
+      // own before we make that transparent. user-select guards against a
+      // drag ever starting a document selection in here instead of a text
+      // selection in the field.
+      '.mirror { margin: 0; user-select: none; color: ' + palette.text + '; }',
       '.comment { color: ' + palette.comment + '; font-style: italic; }',
       '.string { color: ' + palette.string + '; }',
       '.number { color: ' + palette.number + '; }',
@@ -944,24 +959,6 @@
       const styleEl = document.createElement('style');
       styleEl.textContent = cssText;
       root.appendChild(styleEl);
-    }
-  }
-
-  let selectionCssInstalled = false;
-
-  function installSelectionCss() {
-    if (selectionCssInstalled) {
-      return;
-    }
-    selectionCssInstalled = true;
-    try {
-      const sheet = new CSSStyleSheet();
-      sheet.replaceSync(MOSES_HL_SELECTION_CSS);
-      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-    } catch (err) {
-      const styleEl = document.createElement('style');
-      styleEl.textContent = MOSES_HL_SELECTION_CSS;
-      document.head.appendChild(styleEl);
     }
   }
 
@@ -1116,6 +1113,9 @@
     state.textarea.classList.remove('moses-hl');
     state.textarea.spellcheck = state.originalSpellcheck;
     style.color = state.originalColor;
+    style.backgroundColor = state.originalInlineBackground;
+    style.position = state.originalInlinePosition;
+    style.zIndex = state.originalInlineZIndex;
     style.caretColor = '';
     style.fontFamily = state.originalFontFamily;
     style.removeProperty('font-variant-ligatures');
@@ -1215,20 +1215,32 @@
     host.style.position = 'absolute';
     host.style.pointerEvents = 'none';
     host.style.overflow = 'hidden';
-    host.style.zIndex = '2';
+    // The textarea is given z-index 1 below, so it paints over this. Both
+    // have to be positioned for the comparison to happen at all: a
+    // positioned element always paints above a static one, whatever the
+    // DOM order.
+    host.style.zIndex = '0';
 
     const root = host.attachShadow({ mode: 'open' });
     const palette = isDarkBackground(getComputedStyle(textarea))
       ? DARK_PALETTE
       : LIGHT_PALETTE;
+
     adoptStyles(root, buildTokenCss(palette));
 
     const mirror = document.createElement('div');
     mirror.className = 'mirror';
     root.appendChild(mirror);
-    // After the textarea, so it paints on top without needing a z-index on
-    // the textarea itself. One childList mutation, once, per field.
-    parent.insertBefore(host, textarea.nextSibling);
+    // One childList mutation, once, per field.
+    parent.insertBefore(host, textarea);
+
+    // The textarea's own background would hide the mirror behind it, so the
+    // mirror takes it over. Everything else about the field's chrome -
+    // border, focus ring, invalid-field styling - is still drawn by the
+    // textarea itself, on top.
+    const textareaStyle = getComputedStyle(textarea);
+    const originalBackgroundColor = textareaStyle.backgroundColor;
+    mirror.style.backgroundColor = originalBackgroundColor;
 
     const state = {
       textarea,
@@ -1249,6 +1261,9 @@
       originalColor: textarea.style.color,
       originalFontFamily: textarea.style.fontFamily,
       originalSpellcheck: textarea.spellcheck,
+      originalInlineBackground: textarea.style.backgroundColor,
+      originalInlinePosition: textarea.style.position,
+      originalInlineZIndex: textarea.style.zIndex,
     };
 
     // EVERY write to the textarea's own style happens here, before the style
@@ -1256,11 +1271,20 @@
     // would retrigger the observer, which would sync, which would... - an
     // infinite loop. After this point we only ever write to the mirror.
     textarea.classList.add('moses-hl');
+    // Both elements have to be positioned for z-index to decide which paints
+    // on top; a positioned host would otherwise always win over a static
+    // textarea, whatever the DOM order. No offsets are set, so this doesn't
+    // move the field.
+    if (textareaStyle.position === 'static') {
+      textarea.style.position = 'relative';
+    }
+    textarea.style.zIndex = '1';
+    textarea.style.backgroundColor = 'transparent';
     if (mode === 'maxima') {
       // Spellchecking Maxima identifiers is pure noise. Question text is
       // prose, though, so it keeps its spellcheck - the squiggles are drawn
-      // by the textarea underneath and show through the mirror's
-      // transparent background, landing under the right words.
+      // by the textarea, which sits on top of the mirror, so they land under
+      // the right words.
       textarea.spellcheck = false;
       textarea.style.fontFamily = CODE_FONT_STACK;
     }
@@ -1292,7 +1316,6 @@
 
     // Only now, with a proven-good mirror in place, is it safe to hide the
     // real text.
-    installSelectionCss();
     textarea.style.color = 'transparent';
     textarea.style.caretColor = palette.caret;
     liveStates.add(state);

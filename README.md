@@ -193,8 +193,7 @@ own colour:
 
 Prose fields keep Moodle's own font (only the code fields are switched to
 monospace) and keep their spellcheck — the squiggles are drawn by the real
-textarea underneath and show through the overlay, landing under the right
-words.
+textarea, which sits on top of the mirror, so they land under the right words.
 
 **On the exam Moodle (`moodle-app6`)** the Question text field uses the
 rich-text editor, which hides the real textarea; the script skips those, so
@@ -203,11 +202,22 @@ CASText highlighting will mostly show up on `moodle-app2`.
 ### How it works, and how it can fail
 
 A `<textarea>` can only render plain text — you can't put a coloured `<span>`
-inside one. So the script lays a "mirror" element on top of the field showing
-the same text with colours, makes it click-through (`pointer-events: none`),
-and makes the real textarea's own text transparent. **Everything you actually
-interact with is still the real textarea**: typing, the caret, selection,
-Ctrl+Z undo, form submission and the other MoSES scripts are all untouched.
+inside one. So the script puts a "mirror" element *behind* the field showing
+the same text with colours, and makes the real textarea's own text (and
+background) transparent so the mirror shows through it. **Everything you
+actually interact with is still the real textarea**: typing, the caret,
+selection, Ctrl+Z undo, form submission and the other MoSES scripts are all
+untouched.
+
+**Selected text loses its syntax colours while it's selected.** That's
+deliberate. The mirror used to sit in *front* of the textarea, which kept the
+colours visible through the selection band — but both Chrome and Firefox paint
+selected text in the selection's own foreground colour, which overrides
+`color: transparent`, and Firefox ignores `::selection` inside form controls
+entirely. So selecting anything made the real text reappear behind the
+mirror's coloured text: two copies of the same glyphs, unreadable. Putting the
+mirror behind hands selection rendering back to the textarea, where it just
+works, identically in every browser.
 
 Because the mirror is a separate element, it has to line up with the textarea
 to the pixel. Two consequences worth knowing:
