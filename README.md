@@ -239,10 +239,17 @@ to the pixel. Two consequences worth knowing:
   span boundary. With a proportional font the two would drift apart *within* a
   line. With monospace every glyph has the same width, so it can't. (Ligatures
   are switched off on both sides for the same reason.)
-  - Prose fields keep Moodle's font and get `font-kerning: none` instead,
-    which removes the drift at its source — with kerning off, nothing depends
-    on the neighbouring glyph any more, so span boundaries stop mattering. The
-    only cost is that a few letter pairs sit a hair looser than usual.
+  - Prose fields keep Moodle's font by default, and get `font-kerning: none`
+    plus `text-rendering: geometricPrecision` instead. Those remove the two
+    ways a chopped-up line can lay out differently from a continuous one:
+    kerning (which depends on the neighbouring glyph) and hinted rounding of
+    glyph advances to whole pixels (which happens per span, so the error
+    accumulates along the line).
+  - **If the caret still doesn't line up in Question text**, that's the
+    remaining proportional-font drift, and there's a menu command for it:
+    **Toggle monospace in question text / feedback**. Monospace is the only
+    arrangement that's provably exact, since every glyph is then the same
+    width and it no longer matters where the highlighting splits the line.
   - There's also a runtime check on total height: if the mirror ever wraps
     even one line differently from the textarea, it says so in the console
     with both measurements.

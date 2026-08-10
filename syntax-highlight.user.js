@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: Syntax highlighting
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.2.2
+// @version      0.2.3
 // @description  Syntax-highlights every text field on ETHZ Moodle STACK question edit pages: Maxima fields get rainbow-matched brackets, a distinct colour for the variables you define, strings, comments and keywords; Question text and feedback get STACK [[...]] tags, inline CAS {@ ... @}, LaTeX and HTML.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
@@ -34,12 +34,13 @@
  *      would pull a third-party script into an authenticated exam-Moodle page.
  *
  *   3. THE MIRROR OVERLAY (what this script does). We leave the textarea
- *      exactly where Moodle put it and lay a second element - the "mirror" -
- *      directly on top of it, showing the same text but marked up with
- *      coloured spans. The mirror has pointer-events: none, so every click,
- *      drag, keystroke, caret move and selection still goes to the real
- *      textarea underneath. Then we make the textarea's own text transparent,
- *      so the only glyphs you actually see are the mirror's coloured ones.
+ *      exactly where Moodle put it and put a second element - the "mirror" -
+ *      immediately behind it, showing the same text but marked up with
+ *      coloured spans. The textarea's own text and background are then made
+ *      transparent, so the only glyphs you actually see are the mirror's
+ *      coloured ones, while every click, drag, keystroke, caret move and
+ *      selection still goes to the real textarea in front. (Behind rather
+ *      than in front is load-bearing - see the next section.)
  *
  * Nothing about the textarea's value, undo history, form identity or event
  * behaviour changes. If this script breaks, the worst case is cosmetic.
@@ -107,12 +108,19 @@
  * like Fira Code shapes ":=" into one glyph in the textarea, but ":" and "="
  * may land in different spans in the mirror and so stay two glyphs.
  *
- * Question text and feedback are prose, so they keep Moodle's own font
- * rather than being forced to monospace. They get `font-kerning: none`
- * instead, which removes the drift at its source: with kerning off there is
- * nothing left that depends on the neighbouring glyph, so span boundaries
- * stop mattering. The cost is that a few letter pairs sit a hair looser
- * than they otherwise would.
+ * Question text and feedback are prose, so by default they keep Moodle's own
+ * font rather than being forced to monospace, and get `font-kerning: none`
+ * plus `text-rendering: geometricPrecision` instead. Those remove the two
+ * mechanisms by which a chopped-up line can lay out differently from a
+ * continuous one: kerning (which depends on the neighbouring glyph, and
+ * doesn't apply across a span boundary) and hinted advance snapping (which
+ * rounds to whole pixels per inline box, so the rounding error differs and
+ * accumulates along the line).
+ *
+ * Those two mitigations reduce the drift but are not a proof the way
+ * monospace is, so there is also a Tampermonkey menu command to switch prose
+ * fields to monospace as well, for anyone who would rather have the caret
+ * land exactly right than keep the proportional font.
  *
  * THE TWO LANGUAGES
  * -------------------------------------------------------------------------
@@ -144,7 +152,8 @@
   const LOG_PREFIX = '[MoSES Highlight]';
 
   // Tunable constants live up top so they're easy to find/change later.
-  const ENABLED_STORAGE_KEY = 'hl_enabled';  // key used in Tampermonkey's storage
+  const ENABLED_STORAGE_KEY = 'hl_enabled';      // key used in Tampermonkey's storage
+  const MONO_CASTEXT_STORAGE_KEY = 'hl_mono_castext'; // monospace in prose fields too?
   const CODE_FONT_STACK =
     'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
   const MAX_FIELD_CHARS = 100000;   // don't attach to something pathologically large
@@ -1152,6 +1161,7 @@
     style.removeProperty('font-variant-ligatures');
     style.removeProperty('font-kerning');
     style.removeProperty('font-feature-settings');
+    style.removeProperty('text-rendering');
 
     if (reason) {
       console.warn(LOG_PREFIX + ' detached from "' + fieldLabel(state.textarea) + '": ' + reason);
@@ -1318,6 +1328,19 @@
       // the right words.
       textarea.spellcheck = false;
       textarea.style.fontFamily = CODE_FONT_STACK;
+    } else if (GM_getValue(MONO_CASTEXT_STORAGE_KEY, false)) {
+      // Opt-in: monospace makes the caret line up exactly in prose fields
+      // too, at the cost of how they look. See the note on kerning below for
+      // why a proportional font can drift on lines that contain markup.
+      textarea.style.fontFamily = CODE_FONT_STACK;
+    } else {
+      // Hinting snaps each glyph advance to whole pixels, and that snapping
+      // happens per inline box - so the textarea (one continuous run) and
+      // the mirror (chopped into spans by the highlighting) can round the
+      // same line differently, and the error accumulates along it.
+      // geometricPrecision asks for unsnapped, fractional advances on both
+      // sides, which removes that particular source of drift.
+      textarea.style.setProperty('text-rendering', 'geometricPrecision');
     }
     // Ligatures and kerning both adjust glyph positions based on the
     // *neighbouring* glyph, and neither applies across a span boundary - so
@@ -1477,9 +1500,18 @@
     }
   }
 
+  /**
+   * Detach every overlay and forget that we ever considered those fields, so
+   * a following scanNow() picks them up again from scratch. Without the
+   * `attached` removal, turning highlighting off and back on again - or
+   * changing the font setting - would leave every field plain until the page
+   * was reloaded.
+   */
   function teardownAll() {
     for (const state of Array.from(liveStates)) {
+      const { textarea } = state;
       detachOverlay(state, null);
+      attached.delete(textarea);
     }
   }
 
@@ -1487,13 +1519,25 @@
     GM_registerMenuCommand('Toggle STACK syntax highlighting', () => {
       const nowEnabled = !GM_getValue(ENABLED_STORAGE_KEY, true);
       GM_setValue(ENABLED_STORAGE_KEY, nowEnabled);
+      teardownAll();
       if (nowEnabled) {
         scanNow();
-      } else {
-        teardownAll();
       }
       console.info(LOG_PREFIX + ' highlighting ' + (nowEnabled ? 'enabled' : 'disabled'));
     });
+
+    GM_registerMenuCommand('Toggle monospace in question text / feedback', () => {
+      const nowMono = !GM_getValue(MONO_CASTEXT_STORAGE_KEY, false);
+      GM_setValue(MONO_CASTEXT_STORAGE_KEY, nowMono);
+      teardownAll();
+      scanNow();
+      console.info(
+        LOG_PREFIX + ' question text / feedback fields now use ' +
+          (nowMono ? 'a monospace font (caret lines up exactly)' :
+            'Moodle\'s own font (caret may drift on lines containing markup)')
+      );
+    });
+
     GM_registerMenuCommand('Report MoSES highlighting field status', reportFields);
   }
 
