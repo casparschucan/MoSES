@@ -51,6 +51,10 @@ Current scripts:
 - `syntax-highlight.user.js` — syntax-highlights every field via a mirror
   overlay (see below), in Maxima or CASText mode. Owns `textarea.style.color`
   / `caretColor` / `fontFamily` / `fontKerning` on the fields it attaches to.
+- `stack-lint.user.js` — checks each field and lists problems in a strip
+  inserted after it. Pure additions to the DOM; never touches the textarea.
+- `lib/stack-lang.v1.js` — **not a userscript**; the `@require`d library
+  holding both tokenizers and the field classification (see below).
 
 ### Release/update mechanism
 
@@ -61,6 +65,34 @@ triggers an auto-update offer. **Bumping `@version` is mandatory for every
 shipped change** — forgetting it means Tampermonkey silently ignores the
 update. There is no other release step: edit, bump version, commit, push to
 `main`.
+
+### The `@require`d library, and its versioning trap
+
+`lib/stack-lang.v1.js` is a plain script assigning to a top-level
+`var MosesStackLang`; Tampermonkey concatenates it into the requiring script's
+scope, so each userscript sandbox gets its own copy and nothing lands on the
+page's globals. It holds `tokenizeMaxima`, `tokenizeCastext`,
+`isMaximaField`/`fieldMode` and `hasRichEditorUi`.
+
+It exists because `syntax-highlight.user.js` and `stack-lint.user.js` must
+agree **exactly** on tokenisation — a divergence would have the lint reporting
+an error at a position the highlighting shows as the middle of a string, with
+no way to tell which is wrong. That is the "real shared logic" bar from the
+rule above; `insertTextPreservingUndo` remains duplicated and should stay so.
+
+**Tampermonkey caches `@require` URLs aggressively, so the version is in the
+filename.** Two rules, and both fail *silently* when forgotten, exactly like a
+missed `@version` bump:
+
+- Any library change must also bump the `@version` of **every** requiring
+  script, in the same commit.
+- A change that breaks an existing caller needs a **new filename**
+  (`stack-lang.v2.js`) plus updated `@require` lines, so an installed script
+  keeps working against the library it was tested against.
+
+Both consumers guard with `if (typeof MosesStackLang === 'undefined')` and
+`console.error` rather than throwing, so a failed require degrades to "feature
+off" instead of a broken page.
 
 ### Defensive DOM-selector pattern (used throughout)
 
@@ -230,6 +262,40 @@ classification and the exact reason it was or wasn't attached. When a user
 reports "it doesn't work", ask for that table first. The script also warns
 by itself when a whole category of field (all Maxima, or all CASText) ends
 up with no highlighting, which is the shape both bugs took.
+
+### `stack-lint.user.js` rule design
+
+Two severities, and the split is load-bearing rather than cosmetic. Errors are
+definitely wrong; suggestions are things STACK accepts but advises against.
+**The missing-semicolon check is a suggestion**, because STACK's docs say
+plainly that semicolons are optional there ("Items are separated by either a
+newline or `;`" / "Adding `;` … is optional … Please add these"). Errors sort
+first so a wall of semicolon advice can't bury one unbalanced bracket, and
+suggestions can be hidden from the menu.
+
+The semicolon rule works over the token stream, never over raw lines, and
+fires only when a line break separates two tokens where neither side is
+continuing the expression (`CONTINUES_AFTER` / `CONTINUES_BEFORE`) and bracket
+depth is 0. That is what keeps it quiet on blank and comment-only lines,
+multi-line statements, `if`/`then` splits, and `block(...)` bodies where
+commas do the separating. Any change here must keep the "SHOULD be silent"
+half of the offline suite passing — false positives are far worse than misses,
+since a linter that cries wolf gets turned off.
+
+Two performance traps, both hit once already:
+- Never call a `lineOf(src, pos)`-style helper per token; that is quadratic
+  (35ms per keystroke on a 300-line field). Tokens are walked in order and
+  their gaps don't overlap, so `hasLineBreakBetween(prev.end, token.start)`
+  costs one pass in total. Line *numbers* are attached in a single later pass
+  by `addLineNumbers`.
+- Rules that need input/PRT names harvest them from the page and **skip
+  themselves when the harvest is empty**, rather than guessing.
+
+Structural problems (unbalanced brackets, unterminated strings, unclosed
+blocks) are not re-derived here — the tokenizer already had to work them out
+to colour the text, so it tags those tokens with a `problem` field and the
+lint just translates them into messages. Re-deriving would only create a
+chance to disagree with what the user can see.
 
 ### `keyboard-shortcuts.user.js` shortcut design
 

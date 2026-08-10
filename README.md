@@ -289,6 +289,97 @@ To turn it off, use the Tampermonkey icon → **Toggle STACK syntax
 highlighting**. It takes effect immediately, without a page reload (so you
 don't lose unsaved edits), and is remembered.
 
+## STACK lint (`stack-lint.user.js`)
+
+Checks each field as you type and lists anything that looks wrong in a small
+strip underneath it:
+
+```
+Line 7   statement doesn't end with ; or $
+Line 12  this ( is never closed
+```
+
+Click a row and the caret jumps to that line. When a field is clean the strip
+disappears completely, so it costs no space in the normal case.
+
+### Errors vs suggestions
+
+- **Errors** are definitely wrong: brackets that don't balance, a string or
+  comment that's never closed, an `[[input:ans1]]` with no
+  `[[validation:ans1]]`.
+- **Suggestions** are things STACK will accept but that you probably didn't
+  mean, or that its documentation recommends against.
+
+Errors always sort first, so a field with twenty missing semicolons can't bury
+the one unbalanced bracket that's actually breaking the question. You can hide
+suggestions entirely from the Tampermonkey menu.
+
+**The semicolon check is a suggestion, not an error**, and that's deliberate —
+STACK's own documentation says so:
+
+> "Items are separated by either a newline or `;`"
+>
+> "Adding `;` at the end of each statement is optional, but makes it easier to
+> cut and paste into a Maxima session. Please add these."
+
+So it's advice, and it's reported as advice.
+
+### What it checks
+
+In **Maxima** fields (Question variables, Feedback variables):
+
+| Check | Severity |
+| --- | --- |
+| Unbalanced, unmatched or mismatched brackets | error |
+| A `"` string or `/*` comment that's never closed | error |
+| `;` used inside brackets, where Maxima wants `,` | error |
+| Feedback variables reassigning an input name (`ans1 : ans1+1`) — STACK forbids this | error |
+| Statement doesn't end with `;` or `$` | suggestion |
+
+The semicolon check works over the tokens rather than the raw lines, so it
+stays quiet on all the things that trip up a naive version: blank and
+comment-only lines, statements spread over several lines (`a : 1 +` / `+ 2;`),
+`if` / `then` split across lines, anything inside `block(...)` where commas do
+the separating, and `$` used as the terminator.
+
+In **CASText** fields (Question text, feedback):
+
+| Check | Severity |
+| --- | --- |
+| `[[input:ansN]]` with no matching `[[validation:ansN]]`, or vice versa | error |
+| The same `[[input:ansN]]` used twice | error |
+| An input name STACK won't accept (letters then optional digits, ≤ 18 chars) | error |
+| A `[[block]]` that's never closed, or a `[[/block]]` with no opener | error |
+| A block name STACK doesn't recognise | error |
+| `[[input:...]]` or `[[feedback:...]]` inside a LaTeX region | error |
+| `{@` or `\(` that's never closed | error |
+| `[[feedback:prtN]]` naming a PRT that isn't on this form | suggestion |
+
+Rules that need to know your question's input or PRT names harvest them from
+the page — input names from the `[[input:...]]` tags you've actually written,
+PRT names from the per-PRT Feedback variables fields (which works even while
+those sections are collapsed). **If it can't find them, the rules that depend
+on them are skipped rather than guessed at**, so an unfamiliar form goes quiet
+instead of raising false alarms.
+
+## The shared library (`lib/stack-lang.v1.js`)
+
+`syntax-highlight.user.js` and `stack-lint.user.js` both pull in
+`lib/stack-lang.v1.js` with Tampermonkey's `@require`. **You don't install it
+separately** — Tampermonkey fetches it automatically when you install either
+script.
+
+It holds the tokenizers for the two languages. They're shared not to save
+lines but because the two scripts have to agree *exactly* on where a string
+ends and what counts as a comment — otherwise the lint would report an error
+at a spot the highlighting shows as the middle of a string, and you'd have no
+way to tell which one was lying.
+
+Because Tampermonkey caches `@require` URLs aggressively, the version lives in
+the **filename**. Editing the library means bumping the `@version` of both
+scripts in the same commit; a change that breaks an existing caller means a
+new filename (`stack-lang.v2.js`) and updated `@require` lines.
+
 ## Updating the script after you push a change
 
 Each script has `@updateURL`/`@downloadURL` metadata pointing at its raw file
