@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: STACK lint
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.1.0
+// @version      0.1.1
 // @description  Checks each field on the ETHZ Moodle STACK question edit page as you type - unbalanced brackets, unterminated strings and comments, statements without a semicolon, [[input:ansN]] tags with no matching [[validation:ansN]], and more - and lists what it found under the field.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
@@ -82,7 +82,8 @@
     );
     return;
   }
-  const { fieldMode, hasRichEditorUi, tokenizeMaxima, tokenizeCastext } = MosesStackLang;
+  const { fieldMode, hasRichEditorUi, harvestNames, tokenizeMaxima, tokenizeCastext } =
+    MosesStackLang;
 
   // Tunable constants live up top so they're easy to find/change later.
   const ENABLED_STORAGE_KEY = 'lint_enabled';        // Tampermonkey storage
@@ -428,47 +429,6 @@
       }
       return a.pos - b.pos;
     });
-  }
-
-  // ---------------------------------------------------------------------
-  // Names harvested from the rest of the form
-  // ---------------------------------------------------------------------
-
-  /**
-   * Two rules need to know what this question's inputs and PRTs are called,
-   * and both degrade gracefully rather than guessing:
-   *
-   *   - input names come from the [[input:...]] tags actually written in the
-   *     CASText fields, which needs no knowledge of Moodle's HTML at all
-   *   - PRT names come from textarea[name$="feedbackvariables"], since the
-   *     repo already relies on that naming convention elsewhere. This works
-   *     even while a PRT section is collapsed, because the element is in the
-   *     DOM regardless of whether it's visible.
-   *
-   * If either comes up empty the rules that depend on it are skipped, so an
-   * unfamiliar form produces silence rather than false alarms.
-   */
-  function harvestNames() {
-    const inputNames = new Set();
-    const prtNames = new Set();
-    const tagPattern = /\[\[\s*input\s*:\s*([A-Za-z0-9_]+)/g;
-
-    for (const textarea of document.querySelectorAll('textarea')) {
-      const key = (textarea.id + ' ' + textarea.name).toLowerCase();
-      const prtMatch = /^(.*[^a-z])?([a-z0-9]+)feedbackvariables/.exec(key);
-      if (prtMatch) {
-        prtNames.add(prtMatch[2]);
-      }
-      if (!key.includes('variables')) {
-        let match;
-        tagPattern.lastIndex = 0;
-        while ((match = tagPattern.exec(textarea.value)) !== null) {
-          inputNames.add(match[1]);
-        }
-      }
-    }
-
-    return { inputNames, prtNames };
   }
 
   // ---------------------------------------------------------------------

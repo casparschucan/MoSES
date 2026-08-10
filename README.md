@@ -362,6 +362,57 @@ those sections are collapsed). **If it can't find them, the rules that depend
 on them are skipped rather than guessed at**, so an unfamiliar form goes quiet
 instead of raising false alarms.
 
+## Autocomplete (`stack-autocomplete.user.js`)
+
+A completion popup at the caret, in three places:
+
+- **`[[`** in Question text / feedback. The contents of `[[ ]]` are a tiny
+  closed vocabulary, so the list can be exactly right rather than a guess.
+- **`{@ ... @}`** inline CAS in those same fields — offers the variables you
+  actually defined in **Question variables**. This is the one that feels most
+  like an IDE, because it knows about a field other than the one you're in.
+- **Maxima fields** — names assigned earlier in the field, plus common
+  Maxima/STACK functions.
+
+Arrow keys move, **Enter** or **Tab** accepts, **Escape** dismisses,
+**Ctrl+Space** opens it on demand. It only ever appears when it has something
+to say. `Ctrl+Enter` still saves while it's open — the popup only claims keys
+that nothing else in MoSES uses, and only while it's showing.
+
+Since `auto-brackets.user.js` turns a typed `[` into `[]`, typing `[` twice
+gives you `[[|]]` with the caret already in the middle — exactly where this
+triggers. Accepting notices the `]]` is already there instead of adding a
+second pair, and completing inside an existing tag *rewrites* its contents
+rather than appending to them.
+
+### What it knows about your question
+
+The names come from the question you're editing, not a hardcoded list:
+
+| Where | What's offered |
+| --- | --- |
+| `[[` | The tags you're most likely to want next, then the block names |
+| `[[input:` | Your existing `ansN` names, plus the next unused one |
+| `[[validation:` | **Only** names that already have an `[[input:...]]` — the constraint is exact, so the list can't be wrong |
+| `[[feedback:` | Only PRTs that actually exist on this form |
+
+Two touches worth knowing about:
+
+- Accepting an `[[input:ansN]]` also inserts `[[validation:ansN]]` after it,
+  unless the question already has one. STACK requires the pair, and the linter
+  flags it when it's missing, so it may as well be there from the start.
+- A bare `[[` leads with the **validation tag you're missing**, if any — so
+  the popup nudges you towards the rule rather than waiting for the linter to
+  complain.
+- Blocks that need closing (`[[if]]`, `[[comment]]`, ...) get their `[[/if]]`
+  inserted too, with the caret left in the useful place — inside the `test=""`
+  for `[[if]]`, between the tags otherwise.
+
+If it can't find your input or PRT names it offers a sensible starting point
+(`ans1`) rather than inventing names, and **never invents PRT names at all**.
+Run **Report MoSES autocomplete candidates** from the Tampermonkey menu to see
+exactly what it found.
+
 ## The shared library (`lib/stack-lang.v1.js`)
 
 `syntax-highlight.user.js` and `stack-lint.user.js` both pull in
@@ -369,11 +420,13 @@ instead of raising false alarms.
 separately** — Tampermonkey fetches it automatically when you install either
 script.
 
-It holds the tokenizers for the two languages. They're shared not to save
-lines but because the two scripts have to agree *exactly* on where a string
-ends and what counts as a comment — otherwise the lint would report an error
-at a spot the highlighting shows as the middle of a string, and you'd have no
-way to tell which one was lying.
+It holds the tokenizers for the two languages, and the code that works out
+what your question's inputs, PRTs and variables are called. These are shared
+not to save lines but because the scripts have to *agree*: if the lint said
+`[[feedback:prt9]]` referred to a PRT that doesn't exist while the autocomplete
+happily offered `prt9`, neither could be trusted. Same for tokenising — a
+divergence would have the lint reporting an error at a spot the highlighting
+shows as the middle of a string, with no way to tell which was lying.
 
 Because Tampermonkey caches `@require` URLs aggressively, the version lives in
 the **filename**. Editing the library means bumping the `@version` of both
@@ -425,8 +478,5 @@ Not implemented yet, but natural follow-ups if useful:
   smaller than your Maxima code, for example.
 - Colouring variables from Question variables when they appear inside
   `{@ ... @}` in the question text — cross-field awareness.
-- A lint/diagnostics strip under each field: statements not ending in `;`
-  (which STACK's docs recommend but don't require), unbalanced brackets, an
-  `[[input:ansN]]` with no matching `[[validation:ansN]]`, and so on.
-- Autocomplete inside `[[ ]]` offering the `ansN`/`prtN` names actually used by
-  the question, plus the STACK block names (`if`, `comment`, `foreach`, ...).
+- Signature hints for Maxima functions as you type their arguments.
+- A "jump to the PRT this feedback tag refers to" link.

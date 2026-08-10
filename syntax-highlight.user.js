@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: Syntax highlighting
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.4.0
+// @version      0.4.1
 // @description  Syntax-highlights every text field on ETHZ Moodle STACK question edit pages: Maxima fields get rainbow-matched brackets, a distinct colour for the variables you define, strings, comments and keywords; Question text and feedback get STACK [[...]] tags, inline CAS {@ ... @}, LaTeX and HTML.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*

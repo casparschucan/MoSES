@@ -53,8 +53,11 @@ Current scripts:
   / `caretColor` / `fontFamily` / `fontKerning` on the fields it attaches to.
 - `stack-lint.user.js` — checks each field and lists problems in a strip
   inserted after it. Pure additions to the DOM; never touches the textarea.
+- `stack-autocomplete.user.js` — completion popup for `[[...]]`, `{@ ... @}`
+  and Maxima identifiers. Edits only via `execCommand`, per the repo rule.
 - `lib/stack-lang.v1.js` — **not a userscript**; the `@require`d library
-  holding both tokenizers and the field classification (see below).
+  holding both tokenizers, the field classification and `harvestNames()`
+  (see below).
 
 ### Release/update mechanism
 
@@ -74,11 +77,21 @@ scope, so each userscript sandbox gets its own copy and nothing lands on the
 page's globals. It holds `tokenizeMaxima`, `tokenizeCastext`,
 `isMaximaField`/`fieldMode` and `hasRichEditorUi`.
 
-It exists because `syntax-highlight.user.js` and `stack-lint.user.js` must
-agree **exactly** on tokenisation — a divergence would have the lint reporting
-an error at a position the highlighting shows as the middle of a string, with
-no way to tell which is wrong. That is the "real shared logic" bar from the
-rule above; `insertTextPreservingUndo` remains duplicated and should stay so.
+It exists because the consumers must **agree**, not to save lines. A
+tokenising divergence would have the lint reporting an error at a position the
+highlighting shows as the middle of a string; a `harvestNames()` divergence
+would have the autocomplete offering a PRT name the lint calls unknown. Either
+way the user has no way to tell which script is wrong, which is worse than one
+of them simply being wrong. That is the "real shared logic" bar from the rule
+above — `insertTextPreservingUndo` and `MIRRORED_PROPS` are both still
+duplicated across scripts and should stay that way, since nothing breaks if
+two copies drift.
+
+`harvestNames()` returns three sets and **any of them can legitimately be
+empty** on a form we don't recognise. Every caller must skip the rules that
+depend on an empty set rather than concluding from it: reporting "no such PRT"
+because the PRT scrape failed would be a false alarm, and inventing PRT names
+for the autocomplete would be worse.
 
 **Tampermonkey caches `@require` URLs aggressively, so the version is in the
 filename.** Two rules, and both fail *silently* when forgotten, exactly like a
@@ -296,6 +309,33 @@ blocks) are not re-derived here — the tokenizer already had to work them out
 to colour the text, so it tags those tokens with a `problem` field and the
 lint just translates them into messages. Re-deriving would only create a
 chance to disagree with what the user can see.
+
+### `stack-autocomplete.user.js` design
+
+Four scripts now listen for `keydown` on `document` in the capture phase, and
+**the order userscripts run in is not guaranteed**, so they coexist by
+claiming disjoint key sets rather than by ordering: `keyboard-shortcuts` takes
+Ctrl+S/P/Enter (requires `ctrlKey`), `auto-brackets` takes the bracket and
+quote keys plus Backspace (bails on any modifier), `auto-close-html-tags`
+takes `>` (same), and this takes arrows/Enter/Tab/Escape **only while the
+popup is open** and never with a modifier held. Its handler returns
+immediately when closed. It uses `stopPropagation` but must never use
+`stopImmediatePropagation`, which would silence sibling listeners on the same
+node in an order-dependent way.
+
+Caret coordinates come from a **throwaway** measurement mirror built when the
+popup opens, not from the highlighter's persistent one — depending on that
+would make this script silently stop working whenever highlighting is off,
+which is exactly what the one-file-per-feature rule exists to prevent. It runs
+at human speed, so rebuilding it is free.
+
+Two things the offline suite pins down, both of which were wrong first time:
+- With **no prefix typed** the builder's order must be preserved verbatim, not
+  re-sorted by label length. The `[[` list deliberately leads with the
+  validation tag the question is missing, and length-sorting buried it under
+  short block names.
+- `caretBack` is counted from the end of `body + ']]' + tail`, so a block
+  template has to account for the `]]` as well as its own trailing characters.
 
 ### `keyboard-shortcuts.user.js` shortcut design
 
