@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: Syntax highlighting
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.2.3
+// @version      0.3.0
 // @description  Syntax-highlights every text field on ETHZ Moodle STACK question edit pages: Maxima fields get rainbow-matched brackets, a distinct colour for the variables you define, strings, comments and keywords; Question text and feedback get STACK [[...]] tags, inline CAS {@ ... @}, LaTeX and HTML.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
@@ -93,6 +93,35 @@
  *     records do not cross a shadow boundary either, so that rebuild is
  *     completely invisible to it and costs it nothing.
  *
+ * HOW THE COLOURS ARE PAINTED (and why there are two renderers)
+ * -------------------------------------------------------------------------
+ * The obvious way to colour the mirror is to fill it with <span>s. That
+ * works, but it has one flaw that cannot be fixed: chopping a line into
+ * inline boxes changes how the browser lays it out. Kerning stops applying
+ * across the box boundaries, and glyph advances get snapped to whole pixels
+ * per box, so the mirror drifts away from the textarea's single continuous
+ * run - and since the caret is drawn by the textarea while the glyphs you
+ * see come from the mirror, the caret stops matching the text. Monospace
+ * hides this, because every advance is then identical; with a proportional
+ * font (i.e. Question text) nothing does.
+ *
+ * So the default renderer instead uses the CSS Custom Highlight API:
+ * CSS.highlights styles *ranges of text*, and the spec only permits
+ * properties that cannot affect layout. The mirror therefore holds one
+ * single text node - laid out byte-for-byte like the textarea, in any font -
+ * with colours painted over it. The drift cannot occur, because there is
+ * nothing left to lay out differently.
+ *
+ * The price is that bold, italic and underline are unavailable, since those
+ * would change layout, which is exactly what we're buying. Errors get a
+ * background tint instead of a wavy underline (Firefox doesn't support
+ * text-decoration on highlights either way).
+ *
+ * The <span> renderer is kept as a fallback for browsers without the API,
+ * and on a menu command, in case ::highlight() ever fails to apply to text
+ * inside a shadow root - which would otherwise leave you with perfectly
+ * aligned but completely uncoloured text.
+ *
  * WHY MONOSPACE IS FORCED ON CODE FIELDS
  * -------------------------------------------------------------------------
  * This is not a taste decision, it's a correctness one. In the textarea a
@@ -154,6 +183,7 @@
   // Tunable constants live up top so they're easy to find/change later.
   const ENABLED_STORAGE_KEY = 'hl_enabled';      // key used in Tampermonkey's storage
   const MONO_CASTEXT_STORAGE_KEY = 'hl_mono_castext'; // monospace in prose fields too?
+  const RENDERER_STORAGE_KEY = 'hl_renderer';         // 'auto' (ranges if available) or 'spans'
   const CODE_FONT_STACK =
     'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace';
   const MAX_FIELD_CHARS = 100000;   // don't attach to something pathologically large
@@ -223,6 +253,7 @@
     variable: '#e36209',
     terminator: '#24292e',
     error: '#d73a49',
+    errorBackground: 'rgba(215, 58, 73, 0.16)',
     caret: '#24292e',
     rainbow: ['#0184bc', '#a626a4', '#50a14f', '#c18401', '#e45649'],
     // CASText
@@ -246,6 +277,7 @@
     variable: '#ffa657',
     terminator: '#d4d4d4',
     error: '#f14c4c',
+    errorBackground: 'rgba(241, 76, 76, 0.24)',
     caret: '#d4d4d4',
     rainbow: ['#4fc1ff', '#c586c0', '#6a9955', '#dcdcaa', '#f14c4c'],
     // CASText
@@ -930,6 +962,131 @@
     return html;
   }
 
+  /**
+   * The CSS Custom Highlight API renderer - the default wherever it exists.
+   *
+   * The <span> renderer above is correct but has one unfixable flaw: chopping
+   * a line into inline boxes changes how the browser lays it out. Kerning
+   * stops applying across the box boundaries and glyph advances get snapped
+   * to whole pixels per box, so a proportional font drifts away from the
+   * textarea's single continuous run, and the caret stops matching what you
+   * see. Monospace hides this (every advance is identical); nothing fixes it.
+   *
+   * CSS.highlights styles *ranges of text* instead of elements, and the spec
+   * only permits properties that cannot affect layout. So the mirror can hold
+   * one single text node - laid out byte-for-byte like the textarea, in any
+   * font - with the colours painted over it. The drift cannot happen, because
+   * there is nothing left to lay out differently.
+   *
+   * The price is that bold, italic and underline are unavailable: those would
+   * change layout, which is the whole thing we're buying. Colour and
+   * background are enough.
+   */
+  function highlightApiAvailable() {
+    return (
+      typeof CSS !== 'undefined' &&
+      typeof Highlight === 'function' &&
+      Boolean(CSS.highlights)
+    );
+  }
+
+  function clearHighlights(state) {
+    if (!state.highlightNames) {
+      return;
+    }
+    for (const name of state.highlightNames) {
+      CSS.highlights.delete(name);
+    }
+    state.highlightNames.clear();
+  }
+
+  /**
+   * Tokens grouped by the class they render as, with touching runs merged so
+   * a long stretch of one colour costs one Range rather than dozens. Split
+   * out from renderWithRanges so it can be exercised without a DOM.
+   */
+  function groupTokenSpans(tokens) {
+    const byClass = new Map();
+    for (const token of tokens) {
+      const cls =
+        token.cls === 'open' || token.cls === 'close'
+          ? 'b' + (token.depth % RAINBOW_DEPTHS)
+          : token.cls;
+      if (PLAIN_CLASSES.has(cls)) {
+        continue;
+      }
+      let spans = byClass.get(cls);
+      if (!spans) {
+        spans = [];
+        byClass.set(cls, spans);
+      }
+      const previous = spans[spans.length - 1];
+      if (previous && previous.end === token.start) {
+        previous.end = token.end;
+      } else {
+        spans.push({ start: token.start, end: token.end });
+      }
+    }
+    return byClass;
+  }
+
+  function renderWithRanges(state, src, tokens) {
+    const { mirror } = state;
+    // A textarea shows an empty final line for a trailing newline; a text
+    // node won't necessarily generate a line box for it.
+    const text = src.endsWith('\n') ? src + '​' : src;
+
+    // Reuse the existing text node where possible: replacing it would
+    // invalidate every Range pointing into it.
+    let node = mirror.firstChild;
+    if (!node || node.nodeType !== 3 || mirror.childNodes.length !== 1) {
+      mirror.textContent = text;
+      node = mirror.firstChild;
+    } else if (node.data !== text) {
+      node.data = text;
+    }
+    if (!node) {
+      clearHighlights(state);
+      return;
+    }
+
+    const byClass = groupTokenSpans(tokens);
+
+    for (const [cls, spans] of byClass) {
+      const name = state.highlightPrefix + cls;
+      let highlight = CSS.highlights.get(name);
+      if (!highlight) {
+        highlight = new Highlight();
+        CSS.highlights.set(name, highlight);
+        state.highlightNames.add(name);
+      }
+      // Fresh Ranges each render rather than a reused pool. Mutating a Range
+      // that is already inside a Highlight is *supposed* to repaint, but if
+      // it didn't the failure would be "colours stop updating as you type",
+      // which is subtle and annoying; rebuilding always works. The render
+      // time is logged on attach, and a field that exceeds RENDER_BUDGET_MS
+      // drops to the debounce path on its own, so this is measurable and
+      // self-limiting rather than a guess.
+      highlight.clear();
+      for (const span of spans) {
+        const range = document.createRange();
+        range.setStart(node, Math.min(span.start, text.length));
+        range.setEnd(node, Math.min(span.end, text.length));
+        highlight.add(range);
+      }
+    }
+
+    // Classes that were on screen a moment ago but aren't any more.
+    for (const name of state.highlightNames) {
+      if (!byClass.has(name.slice(state.highlightPrefix.length))) {
+        const highlight = CSS.highlights.get(name);
+        if (highlight) {
+          highlight.clear();
+        }
+      }
+    }
+  }
+
   function isDarkBackground(computedStyle) {
     const match = /rgba?\(([^)]+)\)/.exec(computedStyle.backgroundColor);
     if (!match) {
@@ -942,7 +1099,59 @@
     return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2] < 128;
   }
 
-  function buildTokenCss(palette) {
+  /**
+   * One place mapping token class -> colour, so the two renderers below
+   * cannot drift apart on what anything looks like.
+   */
+  function tokenColours(palette) {
+    const colours = {
+      comment: palette.comment,
+      string: palette.string,
+      number: palette.number,
+      keyword: palette.keyword,
+      builtin: palette.builtin,
+      call: palette.builtin,
+      var: palette.variable,
+      assign: palette.variable,
+      userfunc: palette.variable,
+      funcdef: palette.variable,
+      terminator: palette.terminator,
+      error: palette.error,
+      tag: palette.tag,
+      attr: palette.attr,
+      entity: palette.entity,
+      math: palette.math,
+      'math-delim': palette.math,
+      'cas-delim': palette.casDelim,
+      'stack-delim': palette.stackDelim,
+      'stack-keyword': palette.stackKeyword,
+      'stack-name': palette.stackName,
+      'stack-attr': palette.attr,
+      'stack-unknown': palette.error,
+    };
+    // Plain identifiers and operators appear here deliberately not at all -
+    // they are rendered in the mirror's base colour with no markup, which is
+    // both the intended look and the cheapest thing to draw.
+    palette.rainbow.forEach((colour, n) => {
+      colours['b' + n] = colour;
+    });
+    return colours;
+  }
+
+  const BOLD_CLASSES = new Set([
+    'terminator', 'stack-keyword', 'stack-name', 'userfunc', 'funcdef',
+    'math-delim', 'cas-delim',
+  ]);
+  const ITALIC_CLASSES = new Set(['comment']);
+  const PROBLEM_CLASSES = new Set(['error', 'stack-unknown']);
+
+  /**
+   * `highlightPrefix` selects the renderer this stylesheet is for: null for
+   * the <span> renderer (plain class selectors), or a per-field prefix for
+   * the Custom Highlight API renderer (::highlight() pseudo-elements).
+   */
+  function buildTokenCss(palette, highlightPrefix) {
+    const colours = tokenColours(palette);
     const rules = [
       ':host { display: block; }',
       // background-color is set inline per field, copied from the textarea's
@@ -950,33 +1159,36 @@
       // drag ever starting a document selection in here instead of a text
       // selection in the field.
       '.mirror { margin: 0; user-select: none; color: ' + palette.text + '; }',
-      '.comment { color: ' + palette.comment + '; font-style: italic; }',
-      '.string { color: ' + palette.string + '; }',
-      '.number { color: ' + palette.number + '; }',
-      '.keyword { color: ' + palette.keyword + '; }',
-      '.builtin, .call { color: ' + palette.builtin + '; }',
-      '.var, .assign { color: ' + palette.variable + '; }',
-      '.userfunc, .funcdef { color: ' + palette.variable + '; font-weight: 700; }',
-      // Note: plain identifiers and operators get no span at all (see
-      // PLAIN_CLASSES) - they inherit .mirror's colour, which is the point.
-      '.terminator { color: ' + palette.terminator + '; font-weight: 700; }',
-      '.error { color: ' + palette.error + '; text-decoration: underline wavy ' + palette.error + '; }',
-      // CASText
-      '.tag { color: ' + palette.tag + '; }',
-      '.attr { color: ' + palette.attr + '; }',
-      '.entity { color: ' + palette.entity + '; }',
-      '.math { color: ' + palette.math + '; }',
-      '.math-delim { color: ' + palette.math + '; font-weight: 700; }',
-      '.cas-delim { color: ' + palette.casDelim + '; font-weight: 700; }',
-      '.stack-delim { color: ' + palette.stackDelim + '; }',
-      '.stack-keyword { color: ' + palette.stackKeyword + '; font-weight: 700; }',
-      '.stack-name { color: ' + palette.stackName + '; font-weight: 700; }',
-      '.stack-attr { color: ' + palette.attr + '; }',
-      '.stack-unknown { color: ' + palette.error + '; text-decoration: underline dotted ' + palette.error + '; }',
     ];
-    palette.rainbow.forEach((colour, n) => {
-      rules.push('.b' + n + ' { color: ' + colour + '; }');
-    });
+
+    for (const cls of Object.keys(colours)) {
+      let declarations = 'color: ' + colours[cls] + ';';
+
+      if (highlightPrefix) {
+        // Highlight pseudo-elements may only carry properties that cannot
+        // affect layout - which is precisely why this renderer keeps the
+        // caret aligned - so no bold, italic or underline here. Firefox also
+        // doesn't support text-decoration on highlights, so problems get a
+        // background tint instead, which is arguably easier to spot anyway.
+        if (PROBLEM_CLASSES.has(cls)) {
+          declarations += ' background-color: ' + palette.errorBackground + ';';
+        }
+        rules.push('::highlight(' + highlightPrefix + cls + ') { ' + declarations + ' }');
+        continue;
+      }
+
+      if (BOLD_CLASSES.has(cls)) {
+        declarations += ' font-weight: 700;';
+      }
+      if (ITALIC_CLASSES.has(cls)) {
+        declarations += ' font-style: italic;';
+      }
+      if (PROBLEM_CLASSES.has(cls)) {
+        declarations += ' text-decoration: underline wavy ' + palette.error + ';';
+      }
+      rules.push('.' + cls + ' { ' + declarations + ' }');
+    }
+
     return rules.join('\n');
   }
 
@@ -1007,6 +1219,7 @@
   const attached = new WeakSet();   // considered, whatever we decided
   const overlaid = new WeakSet();   // actually has a live overlay
   const liveStates = new Set();
+  let overlaySeq = 0;               // makes each field's highlight names unique
 
   function fieldLabel(textarea) {
     return textarea.id || textarea.name || '<unnamed textarea>';
@@ -1060,7 +1273,11 @@
     }
     const started = performance.now();
     const result = state.tokenize(value);
-    state.mirror.innerHTML = renderTokens(value, result.tokens);
+    if (state.useRanges) {
+      renderWithRanges(state, value, result.tokens);
+    } else {
+      state.mirror.innerHTML = renderTokens(value, result.tokens);
+    }
     state.lastValue = value;
     state.renderMs = performance.now() - started;
   }
@@ -1143,6 +1360,7 @@
     for (const [type, handler] of state.listeners) {
       state.textarea.removeEventListener(type, handler);
     }
+    clearHighlights(state);
     state.host.remove();
     overlaid.delete(state.textarea);
     if (state.madeParentRelative) {
@@ -1267,7 +1485,13 @@
       ? DARK_PALETTE
       : LIGHT_PALETTE;
 
-    adoptStyles(root, buildTokenCss(palette));
+    // Highlight names are registered document-wide, so give each field its
+    // own prefix; then a field only ever touches its own entries, and its
+    // shadow stylesheet only carries rules for them.
+    const useRanges =
+      highlightApiAvailable() && GM_getValue(RENDERER_STORAGE_KEY, 'auto') !== 'spans';
+    const highlightPrefix = 'moses-' + ++overlaySeq + '-';
+    adoptStyles(root, buildTokenCss(palette, useRanges ? highlightPrefix : null));
 
     const mirror = document.createElement('div');
     mirror.className = 'mirror';
@@ -1297,6 +1521,9 @@
       listeners: [],
       mode,
       tokenize: mode === 'maxima' ? tokenizeMaxima : tokenizeCastext,
+      useRanges,
+      highlightPrefix,
+      highlightNames: new Set(),
       parent,
       madeParentRelative,
       originalColor: textarea.style.color,
@@ -1329,29 +1556,31 @@
       textarea.spellcheck = false;
       textarea.style.fontFamily = CODE_FONT_STACK;
     } else if (GM_getValue(MONO_CASTEXT_STORAGE_KEY, false)) {
-      // Opt-in: monospace makes the caret line up exactly in prose fields
-      // too, at the cost of how they look. See the note on kerning below for
-      // why a proportional font can drift on lines that contain markup.
+      // Opt-in, and only really needed under the <span> renderer: monospace
+      // makes the caret line up exactly in prose fields too, at the cost of
+      // how they look.
       textarea.style.fontFamily = CODE_FONT_STACK;
-    } else {
-      // Hinting snaps each glyph advance to whole pixels, and that snapping
-      // happens per inline box - so the textarea (one continuous run) and
-      // the mirror (chopped into spans by the highlighting) can round the
-      // same line differently, and the error accumulates along it.
-      // geometricPrecision asks for unsnapped, fractional advances on both
-      // sides, which removes that particular source of drift.
-      textarea.style.setProperty('text-rendering', 'geometricPrecision');
     }
-    // Ligatures and kerning both adjust glyph positions based on the
-    // *neighbouring* glyph, and neither applies across a span boundary - so
-    // the textarea (one continuous run) and the mirror (chopped into spans)
-    // would lay the same line out differently. Monospace makes kerning moot,
-    // which is why code fields get it; prose fields keep Moodle's font and
-    // switch kerning off instead, which costs a little tightness in pairs
-    // like "AV" but keeps the two in lockstep.
-    textarea.style.setProperty('font-variant-ligatures', 'none');
-    textarea.style.setProperty('font-kerning', 'none');
-    textarea.style.setProperty('font-feature-settings', '"liga" 0, "calt" 0, "kern" 0');
+
+    if (!useRanges) {
+      // The <span> renderer chops each line into inline boxes, and two things
+      // then lay it out differently from the textarea's single continuous
+      // run: kerning and ligatures (which depend on the neighbouring glyph
+      // and don't apply across a box boundary), and hinted glyph advances
+      // (snapped to whole pixels per box, so the rounding error differs and
+      // accumulates along the line). Turning all of that off is the best
+      // mitigation available; monospace is the only actual guarantee.
+      //
+      // The range renderer needs none of this - its mirror is a single text
+      // node, so there is nothing left to lay out differently - and leaving
+      // these alone keeps the field looking exactly as Moodle intended.
+      textarea.style.setProperty('font-variant-ligatures', 'none');
+      textarea.style.setProperty('font-kerning', 'none');
+      textarea.style.setProperty('font-feature-settings', '"liga" 0, "calt" 0, "kern" 0');
+      if (mode !== 'maxima') {
+        textarea.style.setProperty('text-rendering', 'geometricPrecision');
+      }
+    }
 
     try {
       syncMetrics(state);
@@ -1416,6 +1645,7 @@
     // time says whether this field is on the frame or the debounce path.
     console.info(
       LOG_PREFIX + ' attached to "' + fieldLabel(textarea) + '" as ' + mode +
+        ' via ' + (useRanges ? 'text ranges' : 'spans') +
         ' (mirror ' + mirror.scrollHeight + 'px vs textarea ' +
         textarea.scrollHeight + 'px, first render ' + state.renderMs.toFixed(1) + 'ms)'
     );
@@ -1535,6 +1765,23 @@
         LOG_PREFIX + ' question text / feedback fields now use ' +
           (nowMono ? 'a monospace font (caret lines up exactly)' :
             'Moodle\'s own font (caret may drift on lines containing markup)')
+      );
+    });
+
+    // Escape hatch. The range renderer relies on ::highlight() applying to
+    // text inside a shadow root; if that ever fails you'd get perfectly
+    // aligned but completely uncoloured text, and this switches back to the
+    // <span> renderer without waiting for a fix.
+    GM_registerMenuCommand('Toggle renderer (text ranges / spans)', () => {
+      const nowSpans = GM_getValue(RENDERER_STORAGE_KEY, 'auto') !== 'spans';
+      GM_setValue(RENDERER_STORAGE_KEY, nowSpans ? 'spans' : 'auto');
+      teardownAll();
+      scanNow();
+      console.info(
+        LOG_PREFIX + ' now rendering with ' +
+          (nowSpans
+            ? '<span> elements (bold/italic work; the caret can drift in proportional fonts)'
+            : 'text ranges (caret always exact; no bold/italic)')
       );
     });
 

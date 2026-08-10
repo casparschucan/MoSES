@@ -142,7 +142,21 @@ Non-obvious constraints, all of which are load-bearing:
   fractions of a pixel per line; and mutation records don't cross a shadow
   boundary, so rebuilding the mirror's `innerHTML` on every keystroke is
   invisible to `moodle-stack-helper.user.js`'s body-wide `MutationObserver`.
-- **Monospace and no ligatures, on both sides.** Kerning and ligatures apply
+- **Colours come from the CSS Custom Highlight API, not `<span>`s.** Spans
+  were the original approach and caused the third shipped bug: chopping a
+  line into inline boxes stops kerning applying across the boundaries and
+  snaps glyph advances to whole pixels per box, so the mirror lays out
+  differently from the textarea's continuous run and the caret (drawn by the
+  textarea) stops matching the glyphs (drawn by the mirror). Monospace hides
+  it; a proportional font can't. `CSS.highlights` styles ranges and may only
+  set properties that cannot affect layout, so the mirror holds a **single
+  text node** and the problem is structurally impossible. Cost: no bold or
+  italic, and errors use a background tint (Firefox doesn't support
+  `text-decoration` on highlights). `renderTokens` (spans) is kept as a
+  fallback and behind a menu command; `groupTokenSpans` is shared, and the
+  offline suite asserts both renderers colour identical characters.
+- **Monospace and no ligatures, on both sides** — only relevant to the
+  `<span>` fallback now. Kerning and ligatures apply
   across a continuous text run in the textarea, but not across a span boundary
   in the mirror, so a proportional font drifts *within* a line by an amount
   that depends on where tokens happen to split. Prose fields keep Moodle's

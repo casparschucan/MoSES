@@ -201,6 +201,33 @@ and there'd be nothing to see. **On the exam Moodle (`moodle-app6`)** that's
 the case for Question text, so CASText highlighting will mostly show up on
 `moodle-app2`.
 
+### How the colours are painted
+
+The obvious way to colour the mirror is to fill it with `<span>`s — but that
+changes how the browser lays the line out. Kerning stops applying across the
+span boundaries and glyph advances get snapped to whole pixels per span, so
+the mirror drifts away from the textarea's single continuous run. Since the
+caret is drawn by the textarea while the glyphs you see come from the mirror,
+the caret then stops matching the text. Monospace hides this; with a
+proportional font nothing does.
+
+So the default renderer uses the **CSS Custom Highlight API**, which styles
+*ranges of text* rather than elements, and is only allowed to set properties
+that can't affect layout. The mirror holds one single text node — laid out
+identically to the textarea, in any font — with the colours painted over it.
+The drift can't happen, because there's nothing left to lay out differently.
+
+The trade-off: **no bold or italic**, since those would change layout, which
+is precisely what's being bought. Errors get a background tint instead of a
+wavy underline (Firefox doesn't support `text-decoration` on highlights
+anyway). Needs Chrome 105+, Safari 17.2+ or Firefox 140+; older browsers fall
+back to the `<span>` renderer automatically.
+
+If highlighting ever goes *completely* colourless while staying perfectly
+aligned, that's `::highlight()` not reaching inside the overlay's shadow root
+— use **Toggle renderer (text ranges / spans)** from the Tampermonkey menu
+and report it.
+
 ### If a field isn't highlighted
 
 Pick **Report MoSES highlighting field status** from the Tampermonkey menu.
@@ -239,17 +266,9 @@ to the pixel. Two consequences worth knowing:
   span boundary. With a proportional font the two would drift apart *within* a
   line. With monospace every glyph has the same width, so it can't. (Ligatures
   are switched off on both sides for the same reason.)
-  - Prose fields keep Moodle's font by default, and get `font-kerning: none`
-    plus `text-rendering: geometricPrecision` instead. Those remove the two
-    ways a chopped-up line can lay out differently from a continuous one:
-    kerning (which depends on the neighbouring glyph) and hinted rounding of
-    glyph advances to whole pixels (which happens per span, so the error
-    accumulates along the line).
-  - **If the caret still doesn't line up in Question text**, that's the
-    remaining proportional-font drift, and there's a menu command for it:
-    **Toggle monospace in question text / feedback**. Monospace is the only
-    arrangement that's provably exact, since every glyph is then the same
-    width and it no longer matters where the highlighting splits the line.
+  - This only applies to the fallback `<span>` renderer. The default renderer
+    (see below) doesn't split the text at all, so alignment is exact in any
+    font and none of this is needed.
   - There's also a runtime check on total height: if the mirror ever wraps
     even one line differently from the textarea, it says so in the console
     with both measurements.
