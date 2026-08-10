@@ -148,6 +148,16 @@ Non-obvious constraints, all of which are load-bearing:
   that depends on where tokens happen to split. Prose fields keep Moodle's
   font and set `font-kerning: none` instead, which removes the dependency on
   the neighbouring glyph rather than the variable widths.
+- **Do not use `[data-fieldtype="editor"]` to detect a rich-text field.**
+  This was a shipped bug in v0.2.0. Moodle tags each form item with the
+  element type declared in PHP, and Question text, General feedback and every
+  PRT node's feedback are declared as `editor` elements — so that attribute is
+  present regardless of which editor *plugin* renders them, including the
+  "Plain text area" one that produces an ordinary `<textarea>`. Testing on it
+  silently excluded every CASText field, i.e. exactly the fields the CASText
+  tokenizer exists for. `hasRichEditorUi()` looks for the WYSIWYG UI itself
+  (`.editor_atto_content`, `.tox-tinymce`, …) and fails **open**: attaching to
+  a visible textarea is always safe, and the alignment check is the backstop.
 - **The host is an absolutely positioned sibling**, with the parent made
   `position: relative` only if it was `static` (and restored on detach).
   Wrapping the textarea would re-parent it, which blurs it and can drop its
@@ -192,10 +202,20 @@ user variables stand out everywhere rather than only where assigned. Tokens
 whose colour equals the base text colour (plain identifiers, operators) are
 emitted without a span at all — that roughly halves the generated markup.
 
-There is no test tooling in this repo, but the tokenizer and renderer are
+There is no test tooling in this repo, but the tokenizers and renderer are
 pure functions of a string and can be exercised offline by slicing them out
 of the file and `new Function`-ing them; do that when changing them, rather
 than relying on the user to notice a regression on a live page.
+
+What that offline testing *cannot* reach is everything to do with layout,
+painting and which fields get picked up — and both bugs shipped so far
+(front-vs-behind overlay, and the `data-fieldtype` over-rejection) were in
+exactly that blind spot, with a green test suite. Hence `reportFields()`,
+exposed as a `GM_registerMenuCommand`: it prints every textarea with its
+classification and the exact reason it was or wasn't attached. When a user
+reports "it doesn't work", ask for that table first. The script also warns
+by itself when a whole category of field (all Maxima, or all CASText) ends
+up with no highlighting, which is the shape both bugs took.
 
 ### `keyboard-shortcuts.user.js` shortcut design
 

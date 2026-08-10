@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MoSES: Syntax highlighting
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.2.1
+// @version      0.2.2
 // @description  Syntax-highlights every text field on ETHZ Moodle STACK question edit pages: Maxima fields get rainbow-matched brackets, a distinct colour for the variables you define, strings, comments and keywords; Question text and feedback get STACK [[...]] tags, inline CAS {@ ... @}, LaTeX and HTML.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
@@ -272,26 +272,55 @@
    * 'castext' - Question text, General feedback, each PRT node's feedback:
    *             HTML with STACK [[...]] tags, inline CAS {@ ... @} and LaTeX
    *             mixed into it
-   * null      - not ours (rich-text editors keep a hidden textarea around)
    */
-  function classifyField(textarea) {
-    if (isEditorManaged(textarea)) {
-      return null;
-    }
+  function fieldMode(textarea) {
     return isMaximaField(textarea) ? 'maxima' : 'castext';
   }
 
   /**
-   * Moodle's rich-text editors (Atto, TinyMCE) keep the real <textarea> in
-   * the DOM but hide it behind their own WYSIWYG UI. Highlighting it would
-   * be invisible work at best. The offsetParent check catches most of these
-   * already; this catches the case where the editor is initialised but its
-   * textarea is still technically laid out.
+   * Is a rich-text editor actually *running* on this field?
+   *
+   * The obvious test - `textarea.closest('[data-fieldtype="editor"]')` - is
+   * wrong, and was a shipped bug in v0.2.0. Moodle tags each form item with
+   * the element type declared in PHP, and Question text, General feedback
+   * and every PRT node's feedback are all declared as `editor` elements.
+   * That attribute is therefore present no matter which editor *plugin*
+   * renders them - including the "Plain text area" one, which produces an
+   * ordinary <textarea> that we very much do want to highlight. Using it as
+   * the test silently excluded every CASText field on the form, i.e. exactly
+   * the set of fields the CASText tokenizer exists for.
+   *
+   * So look for the WYSIWYG UI itself instead. If one is present, the real
+   * textarea is hidden behind it and highlighting it would be invisible
+   * work; if it isn't, this is a plain textarea and we should proceed. This
+   * deliberately fails open - attaching to a visible textarea is always
+   * safe, and the alignment check is the real backstop.
    */
-  function isEditorManaged(textarea) {
-    return Boolean(
-      textarea.closest('.editor_atto, .tox-tinymce, [data-fieldtype="editor"]')
-    );
+  const RICH_EDITOR_UI_SELECTOR =
+    '.editor_atto_content, .editor_atto_toolbar, .tox-tinymce, .tox-edit-area, .cke_contents';
+
+  function hasRichEditorUi(textarea) {
+    const field =
+      textarea.closest('[data-fieldtype], .fitem, .form-group') || textarea.parentElement;
+    return Boolean(field && field.querySelector(RICH_EDITOR_UI_SELECTOR));
+  }
+
+  /**
+   * Why a field is being left alone, or null if it should be highlighted.
+   * Kept separate from maybeAttach() so the diagnostic report below can ask
+   * the same question without side effects.
+   */
+  function attachDecision(textarea) {
+    if (hasRichEditorUi(textarea)) {
+      return 'a rich-text editor is running on this field';
+    }
+    if (textarea.offsetParent === null) {
+      return 'not laid out yet (collapsed section, or hidden)';
+    }
+    if (textarea.value.length > MAX_FIELD_CHARS) {
+      return 'too big (' + textarea.value.length + ' chars, limit ' + MAX_FIELD_CHARS + ')';
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------------
@@ -966,7 +995,8 @@
   // The overlay
   // ---------------------------------------------------------------------
 
-  const attached = new WeakSet();
+  const attached = new WeakSet();   // considered, whatever we decided
+  const overlaid = new WeakSet();   // actually has a live overlay
   const liveStates = new Set();
 
   function fieldLabel(textarea) {
@@ -1105,6 +1135,7 @@
       state.textarea.removeEventListener(type, handler);
     }
     state.host.remove();
+    overlaid.delete(state.textarea);
     if (state.madeParentRelative) {
       state.parent.style.position = '';
     }
@@ -1319,6 +1350,7 @@
     textarea.style.color = 'transparent';
     textarea.style.caretColor = palette.caret;
     liveStates.add(state);
+    overlaid.add(textarea);
 
     const onInput = () => scheduleRender(state);
     const onScroll = () => schedule(state, 'scroll');
@@ -1371,35 +1403,78 @@
     if (!node || node.tagName !== 'TEXTAREA' || attached.has(node)) {
       return;
     }
-    const mode = classifyField(node);
-    if (!mode) {
-      return;
-    }
-    // Measuring a hidden element gives a zero-sized rect, so there is no
-    // point attaching before it's on screen. Collapsed PRT sections are
-    // handled by the focusin path below - you can't type into a field you
-    // haven't clicked into.
-    if (node.offsetParent === null) {
-      return;
-    }
-    if (node.value.length > MAX_FIELD_CHARS) {
-      console.warn(
-        LOG_PREFIX + ' skipping "' + fieldLabel(node) + '": ' + node.value.length +
-          ' characters is above the ' + MAX_FIELD_CHARS + ' limit for highlighting.'
-      );
-      attached.add(node);
+    const skip = attachDecision(node);
+    if (skip) {
+      // "Not laid out yet" is temporary - a collapsed PRT section becomes
+      // attachable the moment it's opened - so don't remember that one, or
+      // the field could never be picked up later.
+      if (!skip.startsWith('not laid out')) {
+        attached.add(node);
+      }
       return;
     }
     attached.add(node);
-    attachOverlay(node, mode);
+    attachOverlay(node, fieldMode(node));
   }
 
   // ---------------------------------------------------------------------
   // Bootstrap
   // ---------------------------------------------------------------------
 
+  /**
+   * Every textarea on the page and what this script decided to do with it.
+   * Worth having as a first-class feature rather than a debugging session:
+   * the live page can't be inspected from here, so when a field isn't
+   * highlighted the fastest possible answer is one the user can read off
+   * their own console and paste back.
+   */
+  function reportFields() {
+    const rows = [];
+    document.querySelectorAll('textarea').forEach((textarea) => {
+      const skip = attachDecision(textarea);
+      rows.push({
+        id: textarea.id || '(none)',
+        name: textarea.name || '(none)',
+        mode: fieldMode(textarea),
+        chars: textarea.value.length,
+        status: overlaid.has(textarea)
+          ? 'highlighted'
+          : skip
+            ? 'skipped - ' + skip
+            : 'not attached (look for a warning above)',
+      });
+    });
+
+    if (!rows.length) {
+      console.warn(LOG_PREFIX + ' found no <textarea> elements on this page at all.');
+      return rows;
+    }
+    console.info(LOG_PREFIX + ' field status (' + rows.length + ' textareas):');
+    if (console.table) {
+      console.table(rows);
+    } else {
+      console.info(rows);
+    }
+    return rows;
+  }
+
   function scanNow() {
     document.querySelectorAll('textarea').forEach(maybeAttach);
+  }
+
+  /**
+   * Say something when a whole category of field silently gets nothing -
+   * the failure mode that hid the CASText tokenizer for a whole release.
+   */
+  function warnIfModeUnused(mode, rows) {
+    const inMode = rows.filter((row) => row.mode === mode);
+    if (inMode.length && !inMode.some((row) => row.status === 'highlighted')) {
+      console.warn(
+        LOG_PREFIX + ' none of the ' + inMode.length + ' ' + mode + ' field(s) on this page ' +
+          'got highlighted. Run "Report MoSES highlighting field status" from the ' +
+          'Tampermonkey menu to see why each one was skipped.'
+      );
+    }
   }
 
   function teardownAll() {
@@ -1419,10 +1494,19 @@
       }
       console.info(LOG_PREFIX + ' highlighting ' + (nowEnabled ? 'enabled' : 'disabled'));
     });
+    GM_registerMenuCommand('Report MoSES highlighting field status', reportFields);
   }
 
   if (GM_getValue(ENABLED_STORAGE_KEY, true)) {
     scanNow();
+    // Collapsed PRT sections mean some fields legitimately aren't attachable
+    // yet, so only complain when an entire category came up empty.
+    const rows = [];
+    document.querySelectorAll('textarea').forEach((textarea) => {
+      rows.push({ mode: fieldMode(textarea), status: overlaid.has(textarea) ? 'highlighted' : '' });
+    });
+    warnIfModeUnused('maxima', rows);
+    warnIfModeUnused('castext', rows);
   }
 
   // Fields inside a collapsed "Potential response tree N" section aren't laid

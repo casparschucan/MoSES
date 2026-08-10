@@ -195,9 +195,20 @@ Prose fields keep Moodle's own font (only the code fields are switched to
 monospace) and keep their spellcheck — the squiggles are drawn by the real
 textarea, which sits on top of the mirror, so they land under the right words.
 
-**On the exam Moodle (`moodle-app6`)** the Question text field uses the
-rich-text editor, which hides the real textarea; the script skips those, so
-CASText highlighting will mostly show up on `moodle-app2`.
+A field is only skipped when a rich-text editor (Atto/TinyMCE) is genuinely
+running on it, in which case the real textarea is hidden behind the WYSIWYG UI
+and there'd be nothing to see. **On the exam Moodle (`moodle-app6`)** that's
+the case for Question text, so CASText highlighting will mostly show up on
+`moodle-app2`.
+
+### If a field isn't highlighted
+
+Pick **Report MoSES highlighting field status** from the Tampermonkey menu.
+It prints a table of every textarea on the page — its `id`, `name`, which mode
+it was classified as, and either `highlighted` or the exact reason it was
+skipped. That's usually the whole answer, and it's the thing to paste back if
+it isn't. The script also warns on its own if an entire category of field
+(all the Maxima ones, or all the CASText ones) ended up with no highlighting.
 
 ### How it works, and how it can fail
 
