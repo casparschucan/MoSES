@@ -145,12 +145,11 @@ markup — see the field heuristic below):
 
 ## Syntax highlighting (`syntax-highlight.user.js`)
 
-A separate script that syntax-highlights the **Maxima code fields** — Question
-variables and each PRT's Feedback variables (the same "id/name contains
-`variables`" test the auto-close-HTML script uses, inverted). Question text and
-feedback fields are deliberately left alone for now.
+A separate script that syntax-highlights **every** text field on the question
+form, in one of two modes depending on what's in it (using the same "id/name
+contains `variables`" test the auto-close-HTML script uses):
 
-What you get:
+### Maxima fields (Question variables, each PRT's Feedback variables)
 - **Rainbow brackets.** `(`, `[` and `{` are coloured by nesting depth, so a
   matching pair always shares a colour and you can see the structure of a long
   `block(...)` at a glance.
@@ -164,8 +163,42 @@ What you get:
 - Strings, nested `/* */` comments, numbers, keywords, and STACK/Maxima
   builtins each get their own colour, and `;` / `$` statement terminators are
   drawn in bold so a missing one stands out.
-- The code fields are switched to a **monospace font** (this is required for
-  the highlighting to line up — see below).
+- These fields are switched to a **monospace font** (required for the
+  highlighting to line up — see below).
+
+### CASText fields (Question text, General feedback, PRT node feedback)
+
+These are HTML with three other languages mixed into them, and each gets its
+own colour:
+
+- **STACK tags** — `[[input:ans1]]`, `[[validation:ans1]]`, `[[feedback:prt1]]`
+  and the rest, with the verb, the `ansN`/`prtN` name and any `key="value"`
+  attributes coloured separately.
+  - A verb STACK doesn't recognise (`[[inpt:ans1]]`) gets a dotted red
+    underline, so typos in the one bit of syntax you can't get wrong quietly
+    are visible immediately.
+  - Block tags are **pairing-checked**: an unclosed `[[if ...]]`, a stray
+    `[[/if]]`, or a `[[comment]]` closed by `[[/if]]` all turn red.
+    `[[input:...]]` and friends never take a closer and are never flagged.
+- **Inline CAS** — `{@ ... @}` and `{# ... #}`. The contents are Maxima, so
+  they're handed to the Maxima tokenizer and get the *same* colours as your
+  Question variables, brackets and all.
+- **LaTeX** — `\( ... \)` and `\[ ... \]` are tinted as one unit, except that
+  any `{@ ... @}` embedded inside keeps its CAS colours. An unclosed `\(`
+  turns red. Note that `$...$` is deliberately **not** treated as maths:
+  STACK's docs say dollar delimiters are unsupported, and guessing would
+  misfire on any question that mentions a price.
+- **HTML** — tags, attributes, quoted values, `<!-- comments -->` and
+  `&entities;`.
+
+Prose fields keep Moodle's own font (only the code fields are switched to
+monospace) and keep their spellcheck — the squiggles are drawn by the real
+textarea underneath and show through the overlay, landing under the right
+words.
+
+**On the exam Moodle (`moodle-app6`)** the Question text field uses the
+rich-text editor, which hides the real textarea; the script skips those, so
+CASText highlighting will mostly show up on `moodle-app2`.
 
 ### How it works, and how it can fail
 
@@ -179,12 +212,19 @@ Ctrl+Z undo, form submission and the other MoSES scripts are all untouched.
 Because the mirror is a separate element, it has to line up with the textarea
 to the pixel. Two consequences worth knowing:
 
-- **Monospace is forced on these fields, deliberately.** In the textarea a
+- **Monospace is forced on the code fields, deliberately.** In the textarea a
   line is one continuous run of text, so the browser kerns across it; in the
   mirror the line is chopped into spans, and kerning doesn't apply across a
   span boundary. With a proportional font the two would drift apart *within* a
   line. With monospace every glyph has the same width, so it can't. (Ligatures
   are switched off on both sides for the same reason.)
+  - Prose fields keep Moodle's font and get `font-kerning: none` instead,
+    which removes the drift at its source — with kerning off, nothing depends
+    on the neighbouring glyph any more, so span boundaries stop mattering. The
+    only cost is that a few letter pairs sit a hair looser than usual.
+  - There's also a runtime check on total height: if the mirror ever wraps
+    even one line differently from the textarea, it says so in the console
+    with both measurements.
 - **If it can't line up, it turns itself off.** At attach time the script
   measures the mirror against the textarea, and if they're more than a pixel
   apart it removes the overlay, restores the field to plain text and logs a
@@ -245,9 +285,8 @@ Not implemented yet, but natural follow-ups if useful:
   text fields, the way Question variables already has it.
 - Per-field (rather than shared) font sizes, if you ever want feedback text
   smaller than your Maxima code, for example.
-- Extending `syntax-highlight.user.js` to Question text and feedback fields:
-  STACK `[[...]]` tags, inline CAS `{@ ... @}` / `{# ... #}`, LaTeX regions and
-  HTML.
+- Colouring variables from Question variables when they appear inside
+  `{@ ... @}` in the question text — cross-field awareness.
 - A lint/diagnostics strip under each field: statements not ending in `;`
   (which STACK's docs recommend but don't require), unbalanced brackets, an
   `[[input:ansN]]` with no matching `[[validation:ansN]]`, and so on.

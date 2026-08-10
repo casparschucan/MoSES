@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         MoSES: Syntax highlighting
 // @namespace    https://github.com/casparschucan/MoSES
-// @version      0.1.0
-// @description  Syntax-highlights the Maxima code fields (Question variables, each PRT's Feedback variables) on ETHZ Moodle STACK question edit pages: rainbow-matched brackets, a distinct colour for the variables you define, plus strings, comments, numbers and keywords.
+// @version      0.2.0
+// @description  Syntax-highlights every text field on ETHZ Moodle STACK question edit pages: Maxima fields get rainbow-matched brackets, a distinct colour for the variables you define, strings, comments and keywords; Question text and feedback get STACK [[...]] tags, inline CAS {@ ... @}, LaTeX and HTML.
 // @author       Caspar Schucan
 // @match        https://moodle-app2.let.ethz.ch/question/bank/editquestion/question.php*
 // @match        https://moodle-app6.let.ethz.ch/question/bank/editquestion/question.php*
@@ -90,6 +90,27 @@
  * like Fira Code shapes ":=" into one glyph in the textarea, but ":" and "="
  * may land in different spans in the mirror and so stay two glyphs.
  *
+ * Question text and feedback are prose, so they keep Moodle's own font
+ * rather than being forced to monospace. They get `font-kerning: none`
+ * instead, which removes the drift at its source: with kerning off there is
+ * nothing left that depends on the neighbouring glyph, so span boundaries
+ * stop mattering. The cost is that a few letter pairs sit a hair looser
+ * than they otherwise would.
+ *
+ * THE TWO LANGUAGES
+ * -------------------------------------------------------------------------
+ * The form holds two quite different things, told apart by the same
+ * id/name-contains-"variables" heuristic auto-close-html-tags.user.js uses:
+ *
+ *   Maxima  - Question variables, each PRT's Feedback variables.
+ *   CASText - Question text, General feedback, PRT node feedback. This is
+ *             HTML with three other languages embedded in it: STACK's
+ *             [[input:ans1]] style tags, inline CAS in {@ ... @} / {# ... #},
+ *             and LaTeX in \( ... \) / \[ ... \]. The CASText tokenizer is
+ *             therefore a dispatcher rather than a grammar, and it hands
+ *             {@ ... @} contents to the Maxima tokenizer, since that is
+ *             exactly what they are.
+ *
  * WHAT HAPPENS IF IT GOES WRONG
  * -------------------------------------------------------------------------
  * The failure mode to be afraid of is "your text is now invisible", so the
@@ -132,7 +153,7 @@
    */
   const MIRRORED_PROPS = [
     'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'fontVariant',
-    'fontStretch', 'fontVariantLigatures', 'fontFeatureSettings',
+    'fontStretch', 'fontVariantLigatures', 'fontFeatureSettings', 'fontKerning',
     'lineHeight', 'letterSpacing', 'wordSpacing', 'textTransform',
     'textIndent', 'textRendering',
     'whiteSpace', 'overflowWrap', 'wordBreak', 'tabSize',
@@ -184,6 +205,15 @@
     error: '#d73a49',
     caret: '#24292e',
     rainbow: ['#0184bc', '#a626a4', '#50a14f', '#c18401', '#e45649'],
+    // CASText
+    tag: '#22863a',
+    attr: '#6f42c1',
+    entity: '#005cc5',
+    math: '#0184bc',
+    casDelim: '#e36209',
+    stackDelim: '#a626a4',
+    stackKeyword: '#a626a4',
+    stackName: '#0184bc',
   };
 
   const DARK_PALETTE = {
@@ -198,6 +228,15 @@
     error: '#f14c4c',
     caret: '#d4d4d4',
     rainbow: ['#4fc1ff', '#c586c0', '#6a9955', '#dcdcaa', '#f14c4c'],
+    // CASText
+    tag: '#4ec9b0',
+    attr: '#9cdcfe',
+    entity: '#b5cea8',
+    math: '#4fc1ff',
+    casDelim: '#ffa657',
+    stackDelim: '#c586c0',
+    stackKeyword: '#c586c0',
+    stackName: '#4fc1ff',
   };
 
   // ---------------------------------------------------------------------
@@ -215,6 +254,20 @@
   function isMaximaField(textarea) {
     const key = (textarea.id + ' ' + textarea.name).toLowerCase();
     return key.includes('variables');
+  }
+
+  /**
+   * 'maxima'  - Question variables, each PRT's Feedback variables
+   * 'castext' - Question text, General feedback, each PRT node's feedback:
+   *             HTML with STACK [[...]] tags, inline CAS {@ ... @} and LaTeX
+   *             mixed into it
+   * null      - not ours (rich-text editors keep a hidden textarea around)
+   */
+  function classifyField(textarea) {
+    if (isEditorManaged(textarea)) {
+      return null;
+    }
+    return isMaximaField(textarea) ? 'maxima' : 'castext';
   }
 
   /**
@@ -466,6 +519,302 @@
   }
 
   // ---------------------------------------------------------------------
+  // CASText tokenizer (Question text, feedback)
+  // ---------------------------------------------------------------------
+
+  /**
+   * The [[...]] verbs STACK actually recognises, per its documentation.
+   * Anything else gets a "this looks like a typo" colour rather than being
+   * silently accepted - which is the cheapest possible spell-checker for the
+   * one part of the syntax you can't get wrong quietly.
+   */
+  const STACK_VERBS = new Set([
+    'input', 'validation', 'feedback', 'comment', 'if', 'else', 'elif',
+    'foreach', 'define', 'reveal', 'hint', 'adapt', 'todo', 'debug', 'lang',
+    'format', 'textdownload', 'include', 'quid', 'template', 'jsxgraph',
+    'jsstring', 'geogebra', 'parsons', 'javascript', 'ascii', 'iframe',
+    'style', 'script', 'facts', 'score',
+  ]);
+
+  // Verbs that must be closed with a matching [[/verb]]. input/validation/
+  // feedback/define/debug stand alone and must NOT be flagged as unclosed.
+  const STACK_BLOCK_VERBS = new Set([
+    'comment', 'if', 'foreach', 'reveal', 'hint', 'adapt', 'todo', 'lang',
+    'format', 'textdownload', 'include', 'quid', 'template', 'jsxgraph',
+    'jsstring', 'geogebra', 'parsons', 'javascript', 'ascii', 'iframe',
+    'style', 'script', 'facts',
+  ]);
+
+  const STACK_HEAD_RE = /^(\s*)(\/?)\s*([A-Za-z_][A-Za-z0-9_-]*)/;
+  const STACK_NAME_RE = /^:\s*([A-Za-z0-9_]+)/;
+  const STACK_ATTR_RE = /^[A-Za-z_][A-Za-z0-9_-]*/;
+  const HTML_HEAD_RE = /^<\/?([a-zA-Z][a-zA-Z0-9-]*)/;
+  const HTML_ATTR_RE = /^[a-zA-Z_:][a-zA-Z0-9_:.-]*/;
+  const ENTITY_RE = /^&(?:#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/;
+
+  /**
+   * `{@ ... @}` renders a CAS expression as LaTeX, `{# ... #}` as raw Maxima.
+   * Either way the contents are Maxima, so we hand them to the Maxima
+   * tokenizer and shift the resulting positions back into place. Slicing the
+   * substring rather than teaching that tokenizer about bounds keeps it free
+   * of off-by-one edge cases at the seam.
+   */
+  function emitInlineCas(tokens, src, start) {
+    const closer = src[start + 1] + '}';
+    const innerStart = start + 2;
+    const closeAt = src.indexOf(closer, innerStart);
+    if (closeAt === -1) {
+      tokens.push({ start, end: src.length, cls: 'error' });
+      return src.length;
+    }
+    tokens.push({ start, end: innerStart, cls: 'cas-delim' });
+    for (const token of tokenizeMaxima(src.slice(innerStart, closeAt)).tokens) {
+      token.start += innerStart;
+      token.end += innerStart;
+      tokens.push(token);
+    }
+    tokens.push({ start: closeAt, end: closeAt + 2, cls: 'cas-delim' });
+    return closeAt + 2;
+  }
+
+  /**
+   * Whatever follows the verb inside a [[...]] tag: the `:ansN` / `:prtN`
+   * name, and any key="value" attributes.
+   */
+  function emitTagRemainder(tokens, src, from, to) {
+    let i = from;
+    while (i < to) {
+      const c = src[i];
+      const rest = src.slice(i, to);
+
+      if (c === ':') {
+        const match = STACK_NAME_RE.exec(rest);
+        if (match) {
+          const nameStart = i + match[0].length - match[1].length;
+          tokens.push({ start: i, end: nameStart, cls: 'stack-delim' });
+          tokens.push({ start: nameStart, end: nameStart + match[1].length, cls: 'stack-name' });
+          i += match[0].length;
+          continue;
+        }
+      }
+
+      if (c === '"' || c === "'") {
+        const quote = src.indexOf(c, i + 1);
+        const end = quote === -1 || quote >= to ? to : quote + 1;
+        tokens.push({ start: i, end, cls: 'string' });
+        i = end;
+        continue;
+      }
+
+      const attr = STACK_ATTR_RE.exec(rest);
+      if (attr) {
+        tokens.push({ start: i, end: i + attr[0].length, cls: 'stack-attr' });
+        i += attr[0].length;
+        continue;
+      }
+
+      i++;
+    }
+  }
+
+  function emitStackTag(tokens, src, start, blockStack) {
+    const closeAt = src.indexOf(']]', start + 2);
+    if (closeAt === -1) {
+      tokens.push({ start, end: src.length, cls: 'error' });
+      return src.length;
+    }
+    const end = closeAt + 2;
+    const inner = src.slice(start + 2, closeAt);
+    const head = STACK_HEAD_RE.exec(inner);
+    if (!head) {
+      tokens.push({ start, end, cls: 'error' }); // [[ ]] with no verb at all
+      return end;
+    }
+
+    const verb = head[3];
+    const isCloser = head[2] === '/';
+    const verbStart = start + 2 + head[0].length - verb.length;
+    const verbEnd = verbStart + verb.length;
+
+    tokens.push({ start, end: verbStart, cls: 'stack-delim' });
+    const known = STACK_VERBS.has(verb);
+    const verbToken = {
+      start: verbStart,
+      end: verbEnd,
+      cls: known ? 'stack-keyword' : 'stack-unknown',
+      verb,
+    };
+    const verbIdx = tokens.push(verbToken) - 1;
+
+    // Track [[if]]...[[/if]] style pairing so an unclosed or stray block
+    // shows up immediately. `[[ define x=1 /]]` closes itself, and
+    // input/validation/feedback never take a closer at all.
+    if (known && STACK_BLOCK_VERBS.has(verb) && !/\/\s*$/.test(inner)) {
+      if (isCloser) {
+        const openIdx = blockStack.pop();
+        if (openIdx === undefined || tokens[openIdx].verb !== verb) {
+          verbToken.cls = 'error';
+          if (openIdx !== undefined) {
+            blockStack.push(openIdx); // a mismatch doesn't close the opener
+          }
+        }
+      } else {
+        blockStack.push(verbIdx);
+      }
+    }
+
+    emitTagRemainder(tokens, src, verbEnd, closeAt);
+    tokens.push({ start: closeAt, end, cls: 'stack-delim' });
+    return end;
+  }
+
+  function emitHtmlTag(tokens, src, start) {
+    const gt = src.indexOf('>', start);
+    if (gt === -1) {
+      return start + 1; // a bare '<' in prose - leave it as plain text
+    }
+    const head = HTML_HEAD_RE.exec(src.slice(start, gt + 1));
+    if (!head) {
+      return start + 1;
+    }
+
+    const nameEnd = start + head[0].length;
+    tokens.push({ start, end: nameEnd, cls: 'tag' });
+
+    let i = nameEnd;
+    while (i < gt) {
+      const c = src[i];
+      if (c === '"' || c === "'") {
+        const quote = src.indexOf(c, i + 1);
+        const end = quote === -1 || quote > gt ? gt : quote + 1;
+        tokens.push({ start: i, end, cls: 'string' });
+        i = end;
+        continue;
+      }
+      const attr = HTML_ATTR_RE.exec(src.slice(i, gt));
+      if (attr) {
+        tokens.push({ start: i, end: i + attr[0].length, cls: 'attr' });
+        i += attr[0].length;
+        continue;
+      }
+      i++;
+    }
+
+    tokens.push({ start: gt, end: gt + 1, cls: 'tag' });
+    return gt + 1;
+  }
+
+  /**
+   * CASText is HTML with three other languages embedded in it, so this is a
+   * dispatcher rather than a grammar: at each position, work out which of
+   * them we're looking at and hand off.
+   *
+   * The one piece of real state is `mathCloser`. Inside \( ... \) or
+   * \[ ... \] everything is maths and gets one colour - except embedded
+   * {@ ... @}, which STACK routinely puts inside LaTeX and which should keep
+   * its CAS colours. So the loop stays in "maths mode" until it sees the
+   * closing delimiter, flushing runs of plain maths text as it goes.
+   *
+   * Note that $...$ is deliberately NOT treated as maths: STACK's docs say
+   * dollar delimiters are unsupported, and guessing would misfire on any
+   * question that mentions a price.
+   */
+  function tokenizeCastext(src) {
+    const tokens = [];
+    const blockStack = [];
+    const len = src.length;
+    let i = 0;
+    let mathCloser = null;
+    let mathDelimIdx = -1;
+    let mathTextStart = -1;
+
+    function flushMathText(end) {
+      if (mathTextStart >= 0 && end > mathTextStart) {
+        tokens.push({ start: mathTextStart, end, cls: 'math' });
+      }
+      mathTextStart = -1;
+    }
+
+    while (i < len) {
+      const c = src[i];
+
+      if (mathCloser && src.startsWith(mathCloser, i)) {
+        flushMathText(i);
+        tokens.push({ start: i, end: i + mathCloser.length, cls: 'math-delim' });
+        i += mathCloser.length;
+        mathCloser = null;
+        mathDelimIdx = -1;
+        continue;
+      }
+
+      if (c === '{' && (src[i + 1] === '@' || src[i + 1] === '#')) {
+        flushMathText(i);
+        i = emitInlineCas(tokens, src, i);
+        if (mathCloser) {
+          mathTextStart = i;
+        }
+        continue;
+      }
+
+      if (mathCloser) {
+        if (mathTextStart < 0) {
+          mathTextStart = i;
+        }
+        i++;
+        continue;
+      }
+
+      if (c === '\\' && (src[i + 1] === '(' || src[i + 1] === '[')) {
+        mathCloser = src[i + 1] === '(' ? '\\)' : '\\]';
+        mathDelimIdx = tokens.push({ start: i, end: i + 2, cls: 'math-delim' }) - 1;
+        i += 2;
+        mathTextStart = i;
+        continue;
+      }
+
+      if (c === '[' && src[i + 1] === '[') {
+        i = emitStackTag(tokens, src, i, blockStack);
+        continue;
+      }
+
+      if (c === '<' && src.startsWith('<!--', i)) {
+        const close = src.indexOf('-->', i + 4);
+        const end = close === -1 ? len : close + 3;
+        tokens.push({ start: i, end, cls: close === -1 ? 'error' : 'comment' });
+        i = end;
+        continue;
+      }
+
+      if (c === '<') {
+        const next = emitHtmlTag(tokens, src, i);
+        i = next > i ? next : i + 1;
+        continue;
+      }
+
+      if (c === '&') {
+        const entity = ENTITY_RE.exec(src.slice(i, i + 12));
+        if (entity) {
+          tokens.push({ start: i, end: i + entity[0].length, cls: 'entity' });
+          i += entity[0].length;
+          continue;
+        }
+      }
+
+      i++;
+    }
+
+    flushMathText(len);
+    if (mathDelimIdx >= 0) {
+      tokens[mathDelimIdx].cls = 'error'; // a \( that was never closed
+    }
+    for (const openIdx of blockStack) {
+      tokens[openIdx].cls = 'error'; // a [[block]] that was never closed
+    }
+
+    return { tokens };
+  }
+
+  // ---------------------------------------------------------------------
   // Rendering
   // ---------------------------------------------------------------------
 
@@ -494,6 +843,13 @@
     let pos = 0;
 
     for (const token of tokens) {
+      // Tokens must arrive in order and must not overlap, or the text would
+      // be silently duplicated - and the mirror showing something other than
+      // what you typed is the one bug that would be genuinely dangerous
+      // here. Skipping a stray token loses a colour; it never loses text.
+      if (token.start < pos) {
+        continue;
+      }
       if (token.start > pos) {
         html += escapeHtml(src.slice(pos, token.start));
       }
@@ -552,6 +908,18 @@
       // PLAIN_CLASSES) - they inherit .mirror's colour, which is the point.
       '.terminator { color: ' + palette.terminator + '; font-weight: 700; }',
       '.error { color: ' + palette.error + '; text-decoration: underline wavy ' + palette.error + '; }',
+      // CASText
+      '.tag { color: ' + palette.tag + '; }',
+      '.attr { color: ' + palette.attr + '; }',
+      '.entity { color: ' + palette.entity + '; }',
+      '.math { color: ' + palette.math + '; }',
+      '.math-delim { color: ' + palette.math + '; font-weight: 700; }',
+      '.cas-delim { color: ' + palette.casDelim + '; font-weight: 700; }',
+      '.stack-delim { color: ' + palette.stackDelim + '; }',
+      '.stack-keyword { color: ' + palette.stackKeyword + '; font-weight: 700; }',
+      '.stack-name { color: ' + palette.stackName + '; font-weight: 700; }',
+      '.stack-attr { color: ' + palette.attr + '; }',
+      '.stack-unknown { color: ' + palette.error + '; text-decoration: underline dotted ' + palette.error + '; }',
     ];
     palette.rainbow.forEach((colour, n) => {
       rules.push('.b' + n + ' { color: ' + colour + '; }');
@@ -655,7 +1023,7 @@
       return;
     }
     const started = performance.now();
-    const result = tokenizeMaxima(value);
+    const result = state.tokenize(value);
     state.mirror.innerHTML = renderTokens(value, result.tokens);
     state.lastValue = value;
     state.renderMs = performance.now() - started;
@@ -692,6 +1060,32 @@
     return true;
   }
 
+  /**
+   * The attach-time alignment check compares the two boxes, which catches a
+   * mispositioned overlay but not a *mis-wrapped* one: if the mirror breaks
+   * lines even one character differently from the textarea, the boxes still
+   * line up but the text inside them diverges further down the field. Total
+   * height is the cheap tell - different wrapping means a different number
+   * of lines. Warn rather than detach, since a one-off transient shouldn't
+   * tear down a field that's working.
+   */
+  function checkWrapping(state) {
+    if (state.wrapWarned) {
+      return;
+    }
+    const lineHeight = parseFloat(getComputedStyle(state.textarea).lineHeight) || 16;
+    const drift = Math.abs(state.mirror.scrollHeight - state.textarea.scrollHeight);
+    if (drift > lineHeight) {
+      state.wrapWarned = true;
+      console.warn(
+        LOG_PREFIX + ' "' + fieldLabel(state.textarea) + '" wraps differently from its ' +
+          'overlay (' + state.mirror.scrollHeight + 'px vs ' + state.textarea.scrollHeight +
+          'px, line height ' + lineHeight.toFixed(1) + 'px), so colours further down the ' +
+          'field may sit under the wrong text. Please report this along with the field id.'
+      );
+    }
+  }
+
   function detachOverlay(state, reason) {
     if (!state.alive) {
       return;
@@ -720,11 +1114,12 @@
 
     const style = state.textarea.style;
     state.textarea.classList.remove('moses-hl');
-    state.textarea.spellcheck = true;
+    state.textarea.spellcheck = state.originalSpellcheck;
     style.color = state.originalColor;
     style.caretColor = '';
     style.fontFamily = state.originalFontFamily;
     style.removeProperty('font-variant-ligatures');
+    style.removeProperty('font-kerning');
     style.removeProperty('font-feature-settings');
 
     if (reason) {
@@ -764,6 +1159,7 @@
         }
         if (jobs.render) {
           renderOverlay(state);
+          checkWrapping(state);
         }
         syncScroll(state);
       } catch (err) {
@@ -799,7 +1195,7 @@
     schedule(state, 'render');
   }
 
-  function attachOverlay(textarea) {
+  function attachOverlay(textarea, mode) {
     const parent = textarea.parentElement;
     if (!parent) {
       return;
@@ -846,10 +1242,13 @@
       renderMs: 0,
       lastValue: null,
       listeners: [],
+      mode,
+      tokenize: mode === 'maxima' ? tokenizeMaxima : tokenizeCastext,
       parent,
       madeParentRelative,
       originalColor: textarea.style.color,
       originalFontFamily: textarea.style.fontFamily,
+      originalSpellcheck: textarea.spellcheck,
     };
 
     // EVERY write to the textarea's own style happens here, before the style
@@ -857,10 +1256,24 @@
     // would retrigger the observer, which would sync, which would... - an
     // infinite loop. After this point we only ever write to the mirror.
     textarea.classList.add('moses-hl');
-    textarea.spellcheck = false;   // squiggles would show through the overlay
-    textarea.style.fontFamily = CODE_FONT_STACK;
+    if (mode === 'maxima') {
+      // Spellchecking Maxima identifiers is pure noise. Question text is
+      // prose, though, so it keeps its spellcheck - the squiggles are drawn
+      // by the textarea underneath and show through the mirror's
+      // transparent background, landing under the right words.
+      textarea.spellcheck = false;
+      textarea.style.fontFamily = CODE_FONT_STACK;
+    }
+    // Ligatures and kerning both adjust glyph positions based on the
+    // *neighbouring* glyph, and neither applies across a span boundary - so
+    // the textarea (one continuous run) and the mirror (chopped into spans)
+    // would lay the same line out differently. Monospace makes kerning moot,
+    // which is why code fields get it; prose fields keep Moodle's font and
+    // switch kerning off instead, which costs a little tightness in pairs
+    // like "AV" but keeps the two in lockstep.
     textarea.style.setProperty('font-variant-ligatures', 'none');
-    textarea.style.setProperty('font-feature-settings', '"liga" 0, "calt" 0');
+    textarea.style.setProperty('font-kerning', 'none');
+    textarea.style.setProperty('font-feature-settings', '"liga" 0, "calt" 0, "kern" 0');
 
     try {
       syncMetrics(state);
@@ -920,21 +1333,23 @@
     state.resizeObserver = new ResizeObserver(() => schedule(state, 'metrics'));
     state.resizeObserver.observe(textarea);
 
-    // These three numbers are the whole diagnostic story if a field ever
-    // looks wrong: the two heights should agree to within a line, and the
-    // render time says whether this field is on the frame or debounce path.
+    // These numbers are the whole diagnostic story if a field ever looks
+    // wrong: the two heights should agree to within a line, and the render
+    // time says whether this field is on the frame or the debounce path.
     console.info(
-      LOG_PREFIX + ' attached to "' + fieldLabel(textarea) + '" (mirror ' +
-        mirror.scrollHeight + 'px vs textarea ' + textarea.scrollHeight + 'px, ' +
-        'first render ' + state.renderMs.toFixed(1) + 'ms)'
+      LOG_PREFIX + ' attached to "' + fieldLabel(textarea) + '" as ' + mode +
+        ' (mirror ' + mirror.scrollHeight + 'px vs textarea ' +
+        textarea.scrollHeight + 'px, first render ' + state.renderMs.toFixed(1) + 'ms)'
     );
+    checkWrapping(state);
   }
 
   function maybeAttach(node) {
     if (!node || node.tagName !== 'TEXTAREA' || attached.has(node)) {
       return;
     }
-    if (!isMaximaField(node) || isEditorManaged(node)) {
+    const mode = classifyField(node);
+    if (!mode) {
       return;
     }
     // Measuring a hidden element gives a zero-sized rect, so there is no
@@ -953,7 +1368,7 @@
       return;
     }
     attached.add(node);
-    attachOverlay(node);
+    attachOverlay(node, mode);
   }
 
   // ---------------------------------------------------------------------

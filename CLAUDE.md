@@ -48,9 +48,9 @@ Current scripts:
 - `auto-close-html-tags.user.js` — auto-inserts the closing tag when you
   finish an opening HTML tag, restricted to Question text/feedback fields
   (see the field-classification heuristic below).
-- `syntax-highlight.user.js` — syntax-highlights the Maxima fields via a
-  mirror overlay (see below). Owns `textarea.style.color` / `caretColor` /
-  `fontFamily` on those fields.
+- `syntax-highlight.user.js` — syntax-highlights every field via a mirror
+  overlay (see below), in Maxima or CASText mode. Owns `textarea.style.color`
+  / `caretColor` / `fontFamily` / `fontKerning` on the fields it attaches to.
 
 ### Release/update mechanism
 
@@ -131,7 +131,9 @@ Non-obvious constraints, all of which are load-bearing:
 - **Monospace and no ligatures, on both sides.** Kerning and ligatures apply
   across a continuous text run in the textarea, but not across a span boundary
   in the mirror, so a proportional font drifts *within* a line by an amount
-  that depends on where tokens happen to split.
+  that depends on where tokens happen to split. Prose fields keep Moodle's
+  font and set `font-kerning: none` instead, which removes the dependency on
+  the neighbouring glyph rather than the variable widths.
 - **The host is an absolutely positioned sibling**, with the parent made
   `position: relative` only if it was `static` (and restored on detach).
   Wrapping the textarea would re-parent it, which blurs it and can drop its
@@ -151,7 +153,24 @@ Non-obvious constraints, all of which are load-bearing:
   plain text. The failure mode to design against is "the user can't see what
   they're typing", and it must be unreachable.
 
-The tokenizer emits a flat token array rather than an HTML string, because
+There are two tokenizers. `tokenizeMaxima` handles `*variables*` fields.
+`tokenizeCastext` handles the rest, and is a *dispatcher* rather than a
+grammar — CASText is HTML with STACK `[[...]]` tags, inline CAS `{@ ... @}`
+and LaTeX embedded in it, so at each position it works out which language it
+is looking at and hands off. `{@ ... @}` contents go to `tokenizeMaxima` on a
+sliced substring, with the returned positions shifted back into place; slicing
+rather than teaching that tokenizer about bounds keeps it free of off-by-one
+edge cases at the seam. `$...$` is deliberately not treated as maths (STACK's
+docs say dollar delimiters are unsupported, and guessing misfires on prices).
+
+Both tokenizers must emit tokens **in order and non-overlapping**, because the
+renderer walks them linearly and fills the gaps with plain text. `renderTokens`
+skips any token starting before the current position rather than trusting
+them: a duplicated or dropped character in the mirror would show the user
+something other than what they typed, which is the one genuinely dangerous
+bug in this design.
+
+The tokenizers emit a flat token array rather than an HTML string, because
 rainbow brackets need retroactive classification: whether a `(` is matched
 isn't known until its `)` (or EOF). A second linear pass relabels every
 occurrence of a name that was ever an assignment target, which is what makes
